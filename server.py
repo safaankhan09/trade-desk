@@ -10,8 +10,8 @@ import time
 
 
 BASE_DIR = Path(__file__).resolve().parent
-HOST = "127.0.0.1"
-PORT = 8000
+HOST = "0.0.0.0"
+PORT = int(os.environ.get("PORT", 8000))
 CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 TWELVE_DATA_URL = "https://api.twelvedata.com"
 TIMEZONE_FALLBACK = "America/New_York"
