@@ -1,0 +1,634 @@
+const MARKET_GROUPS = {
+  stocks: ["CME", "AAPL", "IBM"],
+  forex: ["GBPUSD", "EURUSD", "USDJPY"],
+  futures: ["NQ", "ES", "GC", "CL"],
+};
+
+const MARKET_GROUP_LABELS = {
+  stocks: "Equities",
+  forex: "FX Pairs",
+  futures: "Futures",
+};
+
+const BRAND_THEMES = {
+  CME: {
+    cardName: "CME Group",
+    venueLabel: "NASDAQ",
+    descriptor: "CME Group market structure and exchange flow",
+    imagePath: "/assets/cme.png",
+  },
+  AAPL: {
+    cardName: "Apple",
+    venueLabel: "NASDAQ",
+    descriptor: "Apple equity trend and session pricing",
+    imagePath: "/assets/apple.svg",
+  },
+  IBM: {
+    cardName: "IBM",
+    venueLabel: "NYSE",
+    descriptor: "IBM institutional tape and daily trend",
+    imagePath: "/assets/ibm.svg",
+  },
+  GBPUSD: {
+    cardName: "GBP / USD",
+    venueLabel: "FX",
+    descriptor: "Sterling versus the US dollar",
+    icon: dualTokenIcon("GBP", "USD", "#123154", "#1f5f89"),
+  },
+  EURUSD: {
+    cardName: "EUR / USD",
+    venueLabel: "FX",
+    descriptor: "Euro versus the US dollar",
+    icon: dualTokenIcon("EUR", "USD", "#133052", "#406ea8"),
+  },
+  USDJPY: {
+    cardName: "USD / JPY",
+    venueLabel: "FX",
+    descriptor: "Dollar strength against the yen",
+    icon: dualTokenIcon("USD", "JPY", "#16375c", "#8d3744"),
+  },
+  NQ: {
+    cardName: "Nasdaq 100 Proxy",
+    venueLabel: "Proxy",
+    descriptor: "NQ view mapped through QQQ",
+    imagePath: "/assets/silver.png",
+  },
+  ES: {
+    cardName: "S&P 500 Proxy",
+    venueLabel: "Proxy",
+    descriptor: "ES view mapped through SPY",
+    icon: letterBadge("ES", "#153740", "#4abeb6"),
+  },
+  GC: {
+    cardName: "Gold Proxy",
+    venueLabel: "Proxy",
+    descriptor: "GC view mapped through XAU / USD",
+    imagePath: "/assets/gold.png",
+  },
+  CL: {
+    cardName: "Crude Proxy",
+    venueLabel: "Proxy",
+    descriptor: "CL view mapped through USO",
+    imagePath: "/assets/crude-oil.png",
+  },
+  VIX: {
+    cardName: "CBOE Volatility Index",
+    venueLabel: "CBOE",
+    descriptor: "Volatility backdrop for broader market risk",
+    icon: `
+      <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="VIX mark">
+        <rect width="64" height="64" rx="18" fill="#171d26"/>
+        <path d="M12 41c5-4 8-17 14-17 5 0 7 13 12 13 6 0 8-11 14-14" fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="12" cy="41" r="2.4" fill="#ffffff"/>
+        <circle cx="26" cy="24" r="2.4" fill="#ffffff"/>
+        <circle cx="38" cy="37" r="2.4" fill="#ffffff"/>
+        <circle cx="52" cy="23" r="2.4" fill="#ffffff"/>
+      </svg>
+    `,
+  },
+};
+
+function dualTokenIcon(topLabel, bottomLabel, topColor, bottomColor) {
+  return `
+    <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${topLabel} ${bottomLabel} mark">
+      <rect width="64" height="64" rx="18" fill="#10151d"/>
+      <rect x="8" y="8" width="48" height="21" rx="10.5" fill="${topColor}"/>
+      <rect x="8" y="35" width="48" height="21" rx="10.5" fill="${bottomColor}"/>
+      <text x="32" y="22" text-anchor="middle" font-size="11" font-weight="700" font-family="Arial, sans-serif" fill="#ffffff">${topLabel}</text>
+      <text x="32" y="49" text-anchor="middle" font-size="11" font-weight="700" font-family="Arial, sans-serif" fill="#ffffff">${bottomLabel}</text>
+    </svg>
+  `;
+}
+
+function letterBadge(label, startColor, endColor) {
+  return `
+    <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${label} badge">
+      <defs>
+        <linearGradient id="grad-${label}" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0%" stop-color="${startColor}"/>
+          <stop offset="100%" stop-color="${endColor}"/>
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="18" fill="url(#grad-${label})"/>
+      <text x="32" y="38" text-anchor="middle" font-size="19" font-weight="700" font-family="Arial, sans-serif" fill="#ffffff">${label}</text>
+    </svg>
+  `;
+}
+
+const clockEl = document.getElementById("clock");
+const timezoneEl = document.getElementById("timezone");
+const refreshNewsButton = document.getElementById("refreshNews");
+const refreshMarketsButton = document.getElementById("refreshMarkets");
+const warmMarketsButton = document.getElementById("warmMarkets");
+const newsMeta = document.getElementById("newsMeta");
+const stocksMeta = document.getElementById("stocksMeta");
+const statusCard = document.getElementById("statusCard");
+const statusReason = document.getElementById("statusReason");
+const statusNextWindow = document.getElementById("statusNextWindow");
+const eventsList = document.getElementById("eventsList");
+const heroAssessment = document.getElementById("heroAssessment");
+const heroAssessmentReason = document.getElementById("heroAssessmentReason");
+const vixValue = document.getElementById("vixValue");
+const vixChange = document.getElementById("vixChange");
+const vixReason = document.getElementById("vixReason");
+const vixPill = document.getElementById("vixPill");
+const watchlistEl = document.getElementById("watchlist");
+const marketTabs = Array.from(document.querySelectorAll("[data-group]"));
+const navLinks = Array.from(document.querySelectorAll("[data-nav-link]"));
+const revealEls = Array.from(document.querySelectorAll(".reveal"));
+
+const chartShell = document.getElementById("chartShell");
+const chartBadge = document.getElementById("chartBadge");
+const chartEyebrow = document.getElementById("chartEyebrow");
+const chartSymbol = document.getElementById("chartSymbol");
+const chartDescriptor = document.getElementById("chartDescriptor");
+const chartVenue = document.getElementById("chartVenue");
+const chartPrice = document.getElementById("chartPrice");
+const chartChange = document.getElementById("chartChange");
+const chartState = document.getElementById("chartState");
+const chartUpdated = document.getElementById("chartUpdated");
+const chartSource = document.getElementById("chartSource");
+const chartLine = document.getElementById("chartLine");
+const chartArea = document.getElementById("chartArea");
+const chartRange = document.getElementById("chartRange");
+const chartMarker = document.getElementById("chartMarker");
+
+const tradeForm = document.getElementById("tradeForm");
+const calcResults = document.getElementById("calcResults");
+const calcMessage = document.getElementById("calcMessage");
+const directionValue = document.getElementById("directionValue");
+const rewardValue = document.getElementById("rewardValue");
+const riskValue = document.getElementById("riskValue");
+const rrValue = document.getElementById("rrValue");
+
+let activeGroup = "stocks";
+let selectedInstrumentId = "CME";
+let latestBoard = [];
+
+function cacheStatusLabel(status) {
+  if (status === "live") return "Live";
+  if (status === "stale") return "Rate-limited, showing last cached data";
+  return "Cached";
+}
+
+function formatCacheAge(seconds, status = "cached") {
+  if (seconds == null || seconds < 15) {
+    return status === "live" ? "Updated just now" : "Cached just now";
+  }
+  if (seconds < 60) {
+    return status === "live" ? "Updated just now" : "Cached just now";
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return status === "live" ? `Updated ${minutes} min ago` : `Cached ${minutes} min ago`;
+  }
+  const hours = Math.floor(minutes / 60);
+  return status === "live" ? `Updated ${hours} hr ago` : `Cached ${hours} hr ago`;
+}
+
+function getTheme(id) {
+  return BRAND_THEMES[id] || {
+    cardName: id,
+    venueLabel: "Market",
+    descriptor: "Instrument view",
+    icon: letterBadge(id.slice(0, 3), "#1d2633", "#44556f"),
+  };
+}
+
+function iconMarkup(theme, label) {
+  if (theme.imagePath) {
+    return `<img src="${theme.imagePath}" alt="${label}" loading="lazy" />`;
+  }
+  return theme.icon;
+}
+
+function getTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York";
+}
+
+function updateClock() {
+  const timezone = getTimezone();
+  const now = new Date();
+  clockEl.textContent = new Intl.DateTimeFormat([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: timezone,
+  }).format(now);
+  timezoneEl.textContent = timezone;
+}
+
+function statusClassFor(status) {
+  if (status === "Unsafe") return "unsafe";
+  if (status === "Caution") return "caution";
+  return "safe";
+}
+
+function formatNumber(value) {
+  return Number(value).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatSigned(value) {
+  const number = Number(value || 0);
+  const prefix = number > 0 ? "+" : "";
+  return `${prefix}${formatNumber(number)}`;
+}
+
+function formatAgeLabel(seconds) {
+  if (seconds == null) return "fresh";
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ago`;
+}
+
+function buildPath(points, width, height, padding) {
+  if (!points.length) return { line: "", area: "" };
+
+  const values = points.map((point) => point.close);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const plotted = points.map((point, index) => {
+    const x = padding + (index / Math.max(points.length - 1, 1)) * (width - padding * 2);
+    const y = height - padding - ((point.close - min) / range) * (height - padding * 2);
+    return { x, y };
+  });
+
+  const line = plotted
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(" ");
+  const first = plotted[0];
+  const last = plotted[plotted.length - 1];
+  const area = `${line} L ${last.x.toFixed(2)} ${(height - padding).toFixed(2)} L ${first.x.toFixed(2)} ${(height - padding).toFixed(2)} Z`;
+  return { line, area };
+}
+
+function renderAssessment(assessment) {
+  statusCard.className = `status-card ${statusClassFor(assessment.status)}`;
+  statusCard.innerHTML = `
+    <p class="status-label">${assessment.status}</p>
+    <p class="status-summary">${assessment.summary}</p>
+  `;
+  statusReason.textContent = assessment.reason || "";
+  statusNextWindow.textContent = assessment.nextSafeWindow || "";
+  heroAssessment.textContent = assessment.summary || "Monitoring session conditions.";
+  heroAssessmentReason.textContent = assessment.reason || "Monitoring volatility and scheduled events.";
+}
+
+function renderVix(snapshot) {
+  if (!snapshot) {
+    vixPill.className = "signal-pill neutral";
+    vixPill.textContent = "Unavailable";
+    vixValue.textContent = "Unavailable";
+    vixChange.textContent = "Unavailable";
+    vixChange.className = "vix-change muted";
+    vixReason.textContent = "VIX data could not be loaded, so the safety call is leaning on scheduled events only.";
+    return;
+  }
+
+  const riskClass = snapshot.riskLevel?.toLowerCase() || "neutral";
+  vixPill.className = `signal-pill ${riskClass}`;
+  vixPill.textContent = snapshot.isProxy ? "Proxy" : (snapshot.riskLevel || "Neutral");
+  vixValue.textContent = formatNumber(snapshot.price);
+  vixChange.textContent = `${formatSigned(snapshot.change)} (${formatSigned(snapshot.changePercent)}%)`;
+  vixChange.className = `vix-change ${snapshot.change >= 0 ? "negative" : "positive"}`;
+  vixReason.textContent = snapshot.message || "VIX is part of the risk check.";
+}
+
+function renderEvents(events) {
+  if (!events.length) {
+    eventsList.innerHTML = `<p class="muted">No scheduled reports found for today in your timezone.</p>`;
+    return;
+  }
+
+  eventsList.innerHTML = events
+    .map(
+      (event) => `
+        <article class="event-item">
+          <div>
+            <div class="event-title">${event.localTimeLabel}</div>
+            <div class="event-meta">${event.localDateLabel}</div>
+          </div>
+          <div>
+            <span class="event-pill ${event.impact.toLowerCase()}">${event.impact}</span>
+          </div>
+          <div>
+            <div class="event-title">${event.title}</div>
+            <div class="event-meta">${event.country}</div>
+            <div class="event-values">Forecast: ${event.forecast || "-"} | Previous: ${event.previous || "-"} | Actual: ${event.actual || "-"}</div>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+}
+
+async function loadCalendar(forceRefresh = false) {
+  const timezone = getTimezone();
+  statusCard.className = "status-card loading";
+  statusCard.innerHTML = `
+    <p class="status-label">Checking calendar...</p>
+    <p class="status-summary">Loading today's events and risk window.</p>
+  `;
+  statusReason.textContent = "";
+  statusNextWindow.textContent = "";
+  newsMeta.textContent = forceRefresh
+    ? "Requesting a fresh calendar and volatility pull..."
+    : "Checking feed health, scheduled-risk windows, and VIX.";
+
+  try {
+    const response = await fetch(`/api/calendar?tz=${encodeURIComponent(timezone)}&refresh=${forceRefresh ? "1" : "0"}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.details || payload.error || "Unknown error");
+
+    renderAssessment(payload.assessment);
+    renderVix(payload.vix || null);
+    renderEvents(payload.todaysEvents || []);
+    newsMeta.textContent = `Risk feed ${payload.cacheStatus || "live"} • ${formatAgeLabel(payload.cacheAgeSeconds)} • ${payload.sourceNote || ""}`;
+  } catch (error) {
+    statusCard.className = "status-card unsafe";
+    statusCard.innerHTML = `
+      <p class="status-label">Connection issue</p>
+      <p class="status-summary">The app could not load the risk desk inputs right now.</p>
+    `;
+    statusReason.textContent = error.message;
+    statusNextWindow.textContent = "Try refreshing in a moment.";
+    heroAssessment.textContent = "Risk desk data is temporarily unavailable.";
+    heroAssessmentReason.textContent = "The frontend is waiting for the calendar or VIX feed to respond.";
+    renderVix(null);
+    eventsList.innerHTML = `<p class="muted">Calendar data is unavailable until the feed responds.</p>`;
+    newsMeta.textContent = "Risk request failed before cached data could be used.";
+  }
+}
+
+function renderTabs() {
+  marketTabs.forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.group === activeGroup);
+  });
+}
+
+function renderBoard(items, payload) {
+  latestBoard = items;
+  if (!items.length) {
+    watchlistEl.innerHTML = `<p class="muted">No instruments available for this market tab right now.</p>`;
+    return;
+  }
+
+  watchlistEl.innerHTML = items
+    .map((item) => {
+      const positive = Number(item.change) >= 0;
+      const liveClass = item.isMarketOpen ? "live" : "closed";
+      const liveLabel = item.isMarketOpen ? "Open" : "Closed";
+      const theme = getTheme(item.id);
+      const cacheLabel = cacheStatusLabel(payload.cacheStatus || "cached");
+      const cacheAge = formatCacheAge(payload.cacheAgeSeconds, payload.cacheStatus || "cached");
+      return `
+        <button class="watch-card ${item.id === selectedInstrumentId ? "active" : ""}" type="button" data-id="${item.id}">
+          <div class="watch-top">
+            <div class="watch-brand">
+              <div class="watch-logo">${iconMarkup(theme, `${theme.cardName} icon`)}</div>
+              <div>
+                <div class="watch-symbol">${item.label}</div>
+                <div class="watch-name">${theme.cardName}</div>
+              </div>
+            </div>
+            <span class="watch-status ${liveClass}">${liveLabel}</span>
+          </div>
+          <div class="watch-price-block">
+            <div class="watch-price">${formatNumber(item.price)}</div>
+            <div class="watch-change ${positive ? "positive" : "negative"}">${formatSigned(item.change)} (${formatSigned(item.changePercent)}%)</div>
+          </div>
+          <div class="watch-meta">${item.description} • ${item.exchange || theme.venueLabel}</div>
+          <div class="watch-cache">
+            <span class="cache-dot ${payload.cacheStatus || "cached"}"></span>
+            <span>${cacheLabel}</span>
+            <span>•</span>
+            <span>${cacheAge}</span>
+          </div>
+        </button>
+      `;
+    })
+    .join("");
+
+  watchlistEl.querySelectorAll("[data-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedInstrumentId = button.dataset.id || selectedInstrumentId;
+      renderBoard(latestBoard, payload);
+      loadChart(selectedInstrumentId);
+    });
+  });
+
+  stocksMeta.textContent = `${cacheStatusLabel(payload.cacheStatus || "cached")} • ${formatCacheAge(payload.cacheAgeSeconds, payload.cacheStatus || "cached")} • ${payload.sourceNote || ""}`;
+}
+
+function renderChart(payload) {
+  const points = payload.points || [];
+  const { line, area } = buildPath(points, 920, 320, 24);
+  const theme = getTheme(payload.id || payload.displaySymbol || payload.symbol);
+  const positive = Number(payload.change) >= 0;
+  const closes = points.map((point) => point.close);
+  const low = closes.length ? Math.min(...closes) : 0;
+  const high = closes.length ? Math.max(...closes) : 0;
+  const lastIndex = Math.max(points.length - 1, 0);
+  const markerX = 24 + (lastIndex / Math.max(points.length - 1, 1)) * (920 - 48);
+  const markerY = (() => {
+    if (!points.length) return 296;
+    const range = high - low || 1;
+    return 320 - 24 - ((points[lastIndex].close - low) / range) * (320 - 48);
+  })();
+
+  chartShell.classList.toggle("negative", !positive);
+  chartLine.setAttribute("d", line);
+  chartArea.setAttribute("d", area);
+  chartMarker.setAttribute("r", points.length ? "5" : "0");
+  chartMarker.setAttribute("cx", markerX.toFixed(2));
+  chartMarker.setAttribute("cy", markerY.toFixed(2));
+  chartBadge.innerHTML = iconMarkup(theme, `${theme.cardName} icon`);
+  chartEyebrow.textContent = `${MARKET_GROUP_LABELS[activeGroup] || "Market"} View`;
+  chartSymbol.textContent = payload.displaySymbol || payload.symbol;
+  chartDescriptor.textContent = payload.description || theme.descriptor;
+  chartVenue.textContent = payload.exchange || theme.venueLabel;
+  chartVenue.className = `chart-pill ${payload.cacheStatus || "cached"}`;
+  chartRange.textContent = points.length ? `Range ${formatNumber(low)} - ${formatNumber(high)}` : "Range unavailable";
+  chartPrice.textContent = `${formatNumber(payload.latestPrice)} ${payload.currency || ""}`.trim();
+  chartChange.textContent = `${formatSigned(payload.change)} (${formatSigned(payload.changePercent)}%)`;
+  chartChange.className = `chart-stat ${positive ? "positive" : "negative"}`;
+  chartState.textContent = payload.lastRefreshed || "Unknown";
+
+  const firstPoint = points[0];
+  const lastPoint = points[points.length - 1];
+  chartUpdated.textContent = firstPoint && lastPoint
+    ? `${theme.cardName} • ${firstPoint.date} to ${lastPoint.date} (${payload.timeZone})`
+    : "No chart points available.";
+  chartSource.textContent = `${cacheStatusLabel(payload.cacheStatus || "cached")} • ${formatCacheAge(payload.cacheAgeSeconds, payload.cacheStatus || "cached")} • ${payload.sourceNote || ""}`.trim();
+}
+
+function renderChartError(message) {
+  chartShell.classList.remove("negative");
+  chartLine.setAttribute("d", "");
+  chartArea.setAttribute("d", "");
+  chartMarker.setAttribute("r", "0");
+  chartMarker.setAttribute("cx", "0");
+  chartMarker.setAttribute("cy", "0");
+  chartPrice.textContent = "Unavailable";
+  chartChange.textContent = "Unavailable";
+  chartChange.className = "chart-stat negative";
+  chartState.textContent = "Unavailable";
+  chartDescriptor.textContent = "Chart data could not be loaded.";
+  chartUpdated.textContent = message;
+  chartSource.textContent = "Chart request failed.";
+  chartVenue.textContent = "Venue unavailable";
+  chartVenue.className = "chart-pill";
+  chartRange.textContent = "Range unavailable";
+}
+
+async function loadBoard(group = activeGroup, forceRefresh = false) {
+  activeGroup = group;
+  renderTabs();
+  watchlistEl.innerHTML = `<p class="muted">Loading ${group} board...</p>`;
+  stocksMeta.textContent = forceRefresh
+    ? `Requesting fresh ${group} data from Twelve Data...`
+    : `Loading ${group} board.`;
+
+  try {
+    const response = await fetch(`/api/market-board?group=${encodeURIComponent(group)}&refresh=${forceRefresh ? "1" : "0"}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.details || payload.error || "Unknown market-board error");
+
+    const preferredIds = MARKET_GROUPS[group] || [];
+    if (!preferredIds.includes(selectedInstrumentId)) {
+      selectedInstrumentId = preferredIds[0];
+    }
+    renderBoard(payload.items || [], payload);
+  } catch (error) {
+    watchlistEl.innerHTML = `<p class="muted">Market board unavailable: ${error.message}</p>`;
+    stocksMeta.textContent = error.message || `Failed to load ${group} board.`;
+  }
+}
+
+async function loadChart(instrumentId = selectedInstrumentId, forceRefresh = false) {
+  chartUpdated.textContent = `Loading ${instrumentId} chart...`;
+  try {
+    const response = await fetch(`/api/chart?id=${encodeURIComponent(instrumentId)}&refresh=${forceRefresh ? "1" : "0"}`);
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.details || payload.error || "Unknown chart error");
+    renderChart(payload);
+  } catch (error) {
+    renderChartError(error.message);
+  }
+}
+
+function calculateTrade(entry, tp, sl) {
+  const reward = Math.abs(tp - entry);
+  const risk = Math.abs(entry - sl);
+  let direction = "Invalid";
+  if (tp > entry && sl < entry) direction = "Long";
+  else if (tp < entry && sl > entry) direction = "Short";
+  if (!reward || !risk || direction === "Invalid") {
+    return { ok: false, message: "Use a valid long setup (TP above, SL below) or short setup (TP below, SL above)." };
+  }
+  return { ok: true, direction, reward, risk, rr: reward / risk };
+}
+
+function setupSectionReveal() {
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-visible");
+        }
+      });
+    },
+    { threshold: 0.18 }
+  );
+
+  revealEls.forEach((element) => observer.observe(element));
+}
+
+function setupNavTracking() {
+  const sections = navLinks
+    .map((link) => {
+      const target = document.querySelector(link.getAttribute("href"));
+      return target ? { link, target } : null;
+    })
+    .filter(Boolean);
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        const match = sections.find((item) => item.target === entry.target);
+        if (match && entry.isIntersecting) {
+          navLinks.forEach((link) => link.classList.remove("is-active"));
+          match.link.classList.add("is-active");
+        }
+      });
+    },
+    { rootMargin: "-35% 0px -45% 0px", threshold: 0.05 }
+  );
+
+  sections.forEach((item) => observer.observe(item.target));
+}
+
+tradeForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const entry = Number(document.getElementById("entryPrice").value);
+  const tp = Number(document.getElementById("tpPrice").value);
+  const sl = Number(document.getElementById("slPrice").value);
+  const result = calculateTrade(entry, tp, sl);
+  if (!result.ok) {
+    calcResults.classList.add("hidden");
+    calcMessage.textContent = result.message;
+    return;
+  }
+
+  calcResults.classList.remove("hidden");
+  directionValue.textContent = result.direction;
+  rewardValue.textContent = formatNumber(result.reward);
+  riskValue.textContent = formatNumber(result.risk);
+  rrValue.textContent = `1 : ${formatNumber(result.rr)}`;
+  calcMessage.textContent = "Trade numbers updated from your three price inputs.";
+});
+
+refreshNewsButton.addEventListener("click", () => loadCalendar(true));
+refreshMarketsButton.addEventListener("click", async () => {
+  await loadBoard(activeGroup, true);
+  await loadChart(selectedInstrumentId, true);
+});
+
+warmMarketsButton.addEventListener("click", async () => {
+  stocksMeta.textContent = "Warming market cache with gentle spacing for free-tier limits...";
+  try {
+    const response = await fetch("/api/warm-market-cache");
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.details || payload.error || "Warm cache request failed");
+    const summaries = (payload.results || [])
+      .map((item) => `${item.group}: ${cacheStatusLabel(item.cacheStatus || "cached")}`)
+      .join(" • ");
+    stocksMeta.textContent = summaries || "Market cache warm-up completed.";
+    await loadBoard(activeGroup, false);
+    await loadChart(selectedInstrumentId, false);
+  } catch (error) {
+    stocksMeta.textContent = error.message || "Warm cache request failed.";
+  }
+});
+
+marketTabs.forEach((tab) => {
+  tab.addEventListener("click", async () => {
+    const nextGroup = tab.dataset.group || "stocks";
+    await loadBoard(nextGroup, false);
+    await loadChart(selectedInstrumentId, false);
+  });
+});
+
+updateClock();
+loadCalendar();
+loadBoard("stocks").then(() => loadChart(selectedInstrumentId));
+setupSectionReveal();
+setupNavTracking();
+setInterval(updateClock, 1000);

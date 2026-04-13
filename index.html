@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>KTS Trading</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page-bg" aria-hidden="true"></div>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="#overview">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>
+            <strong>KTS Trading</strong>
+            <small>Futures Risk Desk</small>
+          </span>
+        </a>
+        <nav class="section-nav" aria-label="Primary">
+          <a href="#overview" data-nav-link>Overview</a>
+          <a href="#risk" data-nav-link>Risk Desk</a>
+          <a href="#markets" data-nav-link>Markets</a>
+          <a href="#calculator" data-nav-link>TP / SL</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section id="overview" class="hero section-card reveal">
+        <div class="hero-copy">
+          <p class="eyebrow">Futures Trade Calculator</p>
+          <h1>Clean market prep for the trading day ahead.</h1>
+          <p class="intro">
+            A tighter trading workspace with a risk desk feel: scheduled reports, VIX-aware
+            safety checks, a live market board, and a fast planner for entry, take profit,
+            and stop loss.
+          </p>
+          <div class="hero-actions">
+            <a class="primary-link" href="#markets">Open market board</a>
+            <a class="secondary-link" href="#calculator">Run TP / SL</a>
+          </div>
+        </div>
+
+        <div class="hero-side">
+          <article class="glass-card time-card">
+            <p class="meta-label">Local session time</p>
+            <p id="clock" class="time-value">Loading...</p>
+            <p id="timezone" class="muted">Detecting timezone...</p>
+          </article>
+
+          <article class="glass-card pulse-card">
+            <div class="pulse-header">
+              <span class="pulse-dot"></span>
+              <span class="meta-label">Desk status</span>
+            </div>
+            <p id="heroAssessment" class="pulse-title">Monitoring session conditions.</p>
+            <p id="heroAssessmentReason" class="muted">
+              News windows, volatility, and market boards all stay in view.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="risk" class="section-card reveal">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Risk Desk</p>
+            <h2>Trade safety, macro risk, and volatility</h2>
+          </div>
+          <button id="refreshNews" class="ghost-button" type="button">Refresh risk data</button>
+        </div>
+
+        <div class="risk-grid">
+          <article class="panel feature-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="meta-label">Session call</p>
+                <h3>Safe To Trade?</h3>
+              </div>
+            </div>
+            <p id="newsMeta" class="panel-meta">Checking feed health and scheduled-risk windows.</p>
+            <div id="statusCard" class="status-card loading">
+              <p class="status-label">Checking calendar...</p>
+              <p class="status-summary">Loading today's events and risk window.</p>
+            </div>
+            <div class="status-notes">
+              <p id="statusReason" class="muted"></p>
+              <p id="statusNextWindow" class="muted"></p>
+            </div>
+          </article>
+
+          <article class="panel feature-panel vix-panel">
+            <div class="panel-heading">
+              <div>
+                <p class="meta-label">Volatility index</p>
+                <h3>VIX Check</h3>
+              </div>
+              <span id="vixPill" class="signal-pill neutral">Pending</span>
+            </div>
+            <div class="vix-grid">
+              <div>
+                <p class="meta-label">Level</p>
+                <p id="vixValue" class="vix-value">Loading...</p>
+              </div>
+              <div>
+                <p class="meta-label">Change</p>
+                <p id="vixChange" class="vix-change muted">Loading...</p>
+              </div>
+            </div>
+            <p id="vixReason" class="muted">
+              VIX will be used as another input for whether conditions look calm or elevated.
+            </p>
+          </article>
+        </div>
+
+        <article class="panel reports-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="meta-label">Calendar</p>
+              <h3>Today's Scheduled Reports</h3>
+            </div>
+          </div>
+          <div id="eventsList" class="events-list">
+            <p class="muted">Waiting for today's event list...</p>
+          </div>
+        </article>
+      </section>
+
+      <section id="markets" class="section-card reveal">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Markets</p>
+            <h2>Stocks, forex, and futures-style tracking</h2>
+          </div>
+          <div class="market-actions">
+            <button id="warmMarkets" class="ghost-button" type="button">Warm market cache</button>
+            <button id="refreshMarkets" class="ghost-button" type="button">Refresh active tab</button>
+          </div>
+        </div>
+
+        <div class="market-toolbar">
+          <button id="tabStocks" class="market-tab active" type="button" data-group="stocks">Stocks</button>
+          <button id="tabForex" class="market-tab" type="button" data-group="forex">Forex</button>
+          <button id="tabFutures" class="market-tab" type="button" data-group="futures">Futures</button>
+          <p id="stocksMeta" class="market-meta">Loading the active market board.</p>
+        </div>
+
+        <div class="market-layout">
+          <aside id="watchlist" class="watchlist">
+            <p class="muted">Loading market board...</p>
+          </aside>
+
+          <article id="chartShell" class="chart-shell panel">
+            <div class="chart-topline">
+              <div class="chart-title-group">
+                <div id="chartBadge" class="chart-badge" aria-hidden="true"></div>
+                <div>
+                  <p id="chartEyebrow" class="meta-label">Selected Instrument</p>
+                  <h3 id="chartSymbol" class="chart-symbol">CME</h3>
+                  <p id="chartDescriptor" class="chart-descriptor">Waiting for market details...</p>
+                </div>
+              </div>
+
+              <div class="chart-stats">
+                <div class="chart-stat-block">
+                  <p class="meta-label">Last Price</p>
+                  <p id="chartPrice" class="chart-stat">Loading...</p>
+                </div>
+                <div class="chart-stat-block">
+                  <p class="meta-label">Change</p>
+                  <p id="chartChange" class="chart-stat">Loading...</p>
+                </div>
+                <div class="chart-stat-block">
+                  <p class="meta-label">Last Refreshed</p>
+                  <p id="chartState" class="chart-stat">Loading...</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="chart-toolbar">
+              <span class="chart-pill">Trend View</span>
+              <span class="chart-pill">Daily History</span>
+              <span id="chartVenue" class="chart-pill">Venue loading</span>
+              <span id="chartRange" class="chart-pill">Range loading</span>
+            </div>
+
+            <div class="chart-wrap">
+              <svg id="priceChart" viewBox="0 0 920 320" preserveAspectRatio="none" aria-label="Price chart">
+                <defs>
+                  <linearGradient id="areaFill" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="0%" stop-color="rgba(53, 210, 167, 0.38)"></stop>
+                    <stop offset="100%" stop-color="rgba(53, 210, 167, 0.02)"></stop>
+                  </linearGradient>
+                </defs>
+                <path id="chartArea" class="chart-area"></path>
+                <path id="chartLine" class="chart-line"></path>
+                <circle id="chartMarker" class="chart-marker" r="5"></circle>
+              </svg>
+            </div>
+
+            <div class="chart-footer">
+              <p id="chartUpdated" class="muted">Loading chart history...</p>
+              <p id="chartSource" class="muted">Source loading...</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="calculator" class="section-card reveal">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Execution</p>
+            <h2>TP / SL Calculator</h2>
+          </div>
+        </div>
+
+        <div class="calculator-layout">
+          <article class="panel calc-panel">
+            <form id="tradeForm" class="trade-form">
+              <label>
+                Entry Price
+                <input id="entryPrice" type="number" step="0.01" placeholder="e.g. 5238.25" required />
+              </label>
+              <label>
+                Take Profit Price
+                <input id="tpPrice" type="number" step="0.01" placeholder="e.g. 5250.25" required />
+              </label>
+              <label>
+                Stop Loss Price
+                <input id="slPrice" type="number" step="0.01" placeholder="e.g. 5232.25" required />
+              </label>
+              <button class="primary-button" type="submit">Calculate trade</button>
+            </form>
+          </article>
+
+          <article class="panel calc-summary">
+            <p class="meta-label">Trade summary</p>
+            <div id="calcResults" class="results hidden">
+              <div class="metric">
+                <span>Direction</span>
+                <strong id="directionValue">-</strong>
+              </div>
+              <div class="metric">
+                <span>Reward (Entry to TP)</span>
+                <strong id="rewardValue">-</strong>
+              </div>
+              <div class="metric">
+                <span>Risk (Entry to SL)</span>
+                <strong id="riskValue">-</strong>
+              </div>
+              <div class="metric">
+                <span>Risk / Reward</span>
+                <strong id="rrValue">-</strong>
+              </div>
+            </div>
+            <p id="calcMessage" class="muted calc-message">
+              Enter your prices to see the setup quality.
+            </p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
