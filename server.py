@@ -4,7 +4,8 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 import datetime as dt
 import json
-import mimetypesfrom http.server import BaseHTTPRequestHandler, HTTPServer
+import mimetypes
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib import error, parse, request
 from zoneinfo import ZoneInfo
 from pathlib import Path
