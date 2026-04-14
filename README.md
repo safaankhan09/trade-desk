@@ -16,7 +16,7 @@ python3 server.py
 Then open:
 
 ```text
-http://127.0.0.1:8000
+[http://127.0.0.1:8000](https://trade-desk-4kcb.onrender.com/#overview)
 ```
 
 ## Notes
