@@ -19,6 +19,10 @@ Then open:
 [http://127.0.0.1:8000](https://trade-desk-4kcb.onrender.com/#overview)
 ```
 
+## Auto trader
+
+The Sweep + FVG/IFVG TradingView strategy is in [`strategies/`](strategies/README.md).
+
 ## Notes
 
 - The news check uses your browser timezone.

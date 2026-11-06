@@ -1,0 +1,336 @@
+//@version=6
+// Sweep + FVG / IFVG Auto Trader
+// ------------------------------------------------------------
+// Idea:
+//   1. Mark swing highs/lows as resting liquidity.
+//   2. Wait for price to sweep one (wick through, close back inside).
+//   3. After a SELL-SIDE sweep (lows taken) look for a LONG:
+//        IFVG model -> price closes UP through a bearish FVG (inversion)
+//        FVG model  -> a fresh bullish FVG prints after the sweep
+//      After a BUY-SIDE sweep (highs taken) the same logic flips SHORT.
+//   4. Enter only inside the time window, on a retest of the zone
+//      (limit order) or at the close of the trigger candle.
+//   5. Take profit is a fixed dollar amount (default $500). Stop goes
+//      just beyond the sweep wick, or a fixed dollar amount.
+// ------------------------------------------------------------
+strategy("Sweep + FVG/IFVG Auto Trader", shorttitle = "Sweep FVG Bot", overlay = true,
+     default_qty_type = strategy.fixed, default_qty_value = 1,
+     initial_capital = 50000, currency = currency.USD,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 2.5,
+     slippage = 1, max_boxes_count = 300, max_labels_count = 300)
+
+// ───────────────────────── Inputs ─────────────────────────
+grpT = "Time"
+tz          = input.string("America/New_York", "Timezone", group = grpT)
+entrySess   = input.session("0930-1100", "Entry window", group = grpT, tooltip = "New trades only open inside this window.")
+holdSess    = input.session("0930-1555", "Hold window", group = grpT, tooltip = "Any open trade is flattened once price leaves this window.")
+
+grpS = "Setup"
+model       = input.string("IFVG", "Entry model", options = ["IFVG", "FVG", "Both"], group = grpS,
+     tooltip = "IFVG: after the sweep, price closes through an opposing FVG (inversion).\nFVG: after the sweep, a new FVG in the trade direction forms.")
+tradeDir    = input.string("Both", "Direction", options = ["Both", "Long only", "Short only"], group = grpS)
+pivotLen    = input.int(5, "Swing strength (bars each side)", minval = 1, group = grpS)
+needReclaim = input.bool(true, "Sweep must close back inside the level", group = grpS)
+sweepExpiry = input.int(20, "Bars allowed from sweep to entry signal", minval = 1, group = grpS)
+fvgNear     = input.int(15, "IFVG: FVG must form within N bars before sweep", minval = 0, group = grpS)
+minFvgTicks = input.int(4, "Min FVG size (ticks)", minval = 1, group = grpS)
+fvgMaxAge   = input.int(150, "Forget FVGs older than (bars)", minval = 10, group = grpS)
+
+grpE = "Entry"
+entryType   = input.string("Retest (limit)", "Entry type", options = ["Retest (limit)", "Candle close (market)"], group = grpE)
+entryLevel  = input.string("Edge", "Retest level", options = ["Edge", "CE (50%)"], group = grpE,
+     tooltip = "Edge = first touch of the zone. CE = midpoint (consequent encroachment).")
+limitExpiry = input.int(10, "Cancel unfilled limit after (bars)", minval = 1, group = grpE)
+
+grpR = "Risk"
+qty         = input.int(1, "Contracts", minval = 1, group = grpR)
+tpDollars   = input.float(500, "Take profit ($ total)", minval = 1, group = grpR)
+slMode      = input.string("Beyond sweep", "Stop loss", options = ["Beyond sweep", "Fixed $"], group = grpR)
+slDollars   = input.float(250, "Fixed stop ($ total)", minval = 1, group = grpR)
+slBuffer    = input.int(4, "Stop buffer past sweep wick (ticks)", minval = 0, group = grpR)
+maxRisk     = input.float(750, "Skip trade if risk is more than ($)", minval = 0, group = grpR, tooltip = "0 = no limit")
+maxTrades   = input.int(2, "Max trades per day", minval = 1, group = grpR)
+stopOnWin   = input.bool(true, "Done for the day after a winner", group = grpR)
+
+grpA = "Alerts / automation"
+alertStyle  = input.string("Bracket", "Alert style", options = ["Bracket", "Signals"], group = grpA,
+     tooltip = "Bracket: the entry alert carries TP + SL prices so your broker holds the bracket; exit alerts are muted (except the end-of-window flatten).\nSignals: entry and every exit send their own alert.")
+
+grpV = "Visuals"
+showFvg     = input.bool(true, "Draw FVGs", group = grpV)
+showSweeps  = input.bool(true, "Label sweeps", group = grpV)
+showDash    = input.bool(true, "Show info panel", group = grpV)
+
+// ───────────────────────── Derived ─────────────────────────
+tick      = syminfo.mintick
+tickValue = syminfo.mintick * syminfo.pointvalue          // $ per tick per contract
+tpTicks   = math.ceil(tpDollars / (tickValue * qty))
+slTicks   = math.ceil(slDollars / (tickValue * qty))
+useLimit  = entryType == "Retest (limit)"
+useIFVG   = model != "FVG"
+useFVG    = model != "IFVG"
+longOK    = tradeDir != "Short only"
+shortOK   = tradeDir != "Long only"
+bracket   = alertStyle == "Bracket"
+
+inEntry = not na(time(timeframe.period, entrySess, tz))
+inHold  = not na(time(timeframe.period, holdSess, tz))
+
+// ───────────────────────── Daily bookkeeping ─────────────────────────
+var int  tradesToday = 0
+var bool wonToday    = false
+newDay = bar_index == 0 or dayofmonth(time, tz) != dayofmonth(time[1], tz)
+if newDay
+    tradesToday := 0
+    wonToday    := false
+
+totalTrades = strategy.closedtrades + strategy.opentrades
+newFills    = totalTrades - nz(totalTrades[1])
+if newFills > 0
+    tradesToday += newFills
+if strategy.wintrades > nz(strategy.wintrades[1])
+    wonToday := true
+
+// ───────────────────────── Liquidity (swing levels) ─────────────────────────
+var array<float> liqHighs = array.new<float>()
+var array<float> liqLows  = array.new<float>()
+
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+if not na(ph)
+    liqHighs.push(ph)
+    if liqHighs.size() > 10
+        liqHighs.shift()
+if not na(pl)
+    liqLows.push(pl)
+    if liqLows.size() > 10
+        liqLows.shift()
+
+// Sweep state. Long setups come from sell-side sweeps (lows taken).
+var int   longSweepBar  = na
+var float longSweepPx   = na
+var int   shortSweepBar = na
+var float shortSweepPx  = na
+
+// Expire old sweeps / extend the sweep extreme while still waiting
+if not na(longSweepBar)
+    if bar_index - longSweepBar > sweepExpiry
+        longSweepBar := na
+    else if low < longSweepPx
+        longSweepPx := low
+if not na(shortSweepBar)
+    if bar_index - shortSweepBar > sweepExpiry
+        shortSweepBar := na
+    else if high > shortSweepPx
+        shortSweepPx := high
+
+bool sweptHigh = false
+bool sweptLow  = false
+if liqHighs.size() > 0
+    for i = liqHighs.size() - 1 to 0
+        lvl = liqHighs.get(i)
+        if high > lvl
+            if not needReclaim or close < lvl
+                sweptHigh := true
+            liqHighs.remove(i)          // level is taken either way
+if liqLows.size() > 0
+    for i = liqLows.size() - 1 to 0
+        lvl = liqLows.get(i)
+        if low < lvl
+            if not needReclaim or close > lvl
+                sweptLow := true
+            liqLows.remove(i)
+
+if sweptLow
+    longSweepBar := bar_index
+    longSweepPx  := low
+    if showSweeps
+        label.new(bar_index, low, "SSL sweep", style = label.style_label_up, color = color.new(color.teal, 20), textcolor = color.white, size = size.tiny)
+if sweptHigh
+    shortSweepBar := bar_index
+    shortSweepPx  := high
+    if showSweeps
+        label.new(bar_index, high, "BSL sweep", style = label.style_label_down, color = color.new(color.maroon, 20), textcolor = color.white, size = size.tiny)
+
+longActive  = not na(longSweepBar)
+shortActive = not na(shortSweepBar)
+
+// ───────────────────────── FVG tracking ─────────────────────────
+type FVG
+    float top
+    float bottom
+    int   bar
+    bool  bull
+    bool  inverted = false
+    box   bx
+
+var array<FVG> fvgs = array.new<FVG>()
+
+colBull = color.new(color.green, 80)
+colBear = color.new(color.red, 80)
+colInv  = color.new(color.purple, 75)
+
+bool  longTrig  = false
+float longTop   = na
+float longBot   = na
+bool  shortTrig = false
+float shortTop  = na
+float shortBot  = na
+
+// Walk existing FVGs: inversions, invalidations, ageing
+if fvgs.size() > 0
+    for i = fvgs.size() - 1 to 0
+        f = fvgs.get(i)
+        bool kill = false
+        if not f.inverted
+            if f.bull and close < f.bottom
+                // bullish FVG broken down -> bearish IFVG (resistance)
+                f.inverted := true
+                if not na(f.bx)
+                    f.bx.set_bgcolor(colInv)
+                if useIFVG and shortActive and not shortTrig and f.bar >= shortSweepBar - fvgNear
+                    shortTrig := true
+                    shortTop  := f.top
+                    shortBot  := f.bottom
+            else if not f.bull and close > f.top
+                // bearish FVG broken up -> bullish IFVG (support)
+                f.inverted := true
+                if not na(f.bx)
+                    f.bx.set_bgcolor(colInv)
+                if useIFVG and longActive and not longTrig and f.bar >= longSweepBar - fvgNear
+                    longTrig := true
+                    longTop  := f.top
+                    longBot  := f.bottom
+        else
+            // An IFVG dies if price closes back through the other side
+            if f.bull and close > f.top
+                kill := true
+            else if not f.bull and close < f.bottom
+                kill := true
+        if bar_index - f.bar > fvgMaxAge
+            kill := true
+        if not na(f.bx)
+            f.bx.set_right(bar_index)
+        if kill
+            fvgs.remove(i)
+
+// New FVGs on this bar
+minGap  = minFvgTicks * tick
+bullGap = low > high[2] and low - high[2] >= minGap
+bearGap = high < low[2] and low[2] - high >= minGap
+
+if bullGap
+    bx = showFvg ? box.new(bar_index - 2, low, bar_index, high[2], border_color = na, bgcolor = colBull) : na
+    fvgs.push(FVG.new(low, high[2], bar_index, true, false, bx))
+    if useFVG and longActive and not longTrig and bar_index - 2 >= longSweepBar
+        longTrig := true
+        longTop  := low
+        longBot  := high[2]
+if bearGap
+    bx = showFvg ? box.new(bar_index - 2, low[2], bar_index, high, border_color = na, bgcolor = colBear) : na
+    fvgs.push(FVG.new(low[2], high, bar_index, false, false, bx))
+    if useFVG and shortActive and not shortTrig and bar_index - 2 >= shortSweepBar
+        shortTrig := true
+        shortTop  := low[2]
+        shortBot  := high
+if fvgs.size() > 40
+    fvgs.shift()
+
+// ───────────────────────── Alert payloads ─────────────────────────
+f_entryMsg(string action, float px, float tp, float sl) =>
+    '{"ticker":"' + syminfo.ticker + '","action":"' + action + '","quantity":' + str.tostring(qty) +
+     ',"price":' + str.tostring(px, format.mintick) +
+     ',"takeProfit":{"limitPrice":' + str.tostring(tp, format.mintick) + '}' +
+     ',"stopLoss":{"type":"stop","stopPrice":' + str.tostring(sl, format.mintick) + '}}'
+exitMsg = '{"ticker":"' + syminfo.ticker + '","action":"exit"}'
+
+// ───────────────────────── Orders ─────────────────────────
+var int   pendLongBar  = na
+var int   pendShortBar = na
+var float activeStop   = na
+
+// A fill clears the pending flags
+if newFills > 0
+    pendLongBar  := na
+    pendShortBar := na
+
+flat      = strategy.position_size == 0
+noPending = na(pendLongBar) and na(pendShortBar)
+dayOK     = tradesToday < maxTrades and not (stopOnWin and wonToday)
+canTrade  = inEntry and flat and noPending and dayOK
+
+if longTrig and longOK and canTrade
+    float entryPx = useLimit ? math.round_to_mintick(entryLevel == "Edge" ? longTop : (longTop + longBot) / 2) : close
+    float stopPx  = slMode == "Beyond sweep" ? longSweepPx - slBuffer * tick : entryPx - slTicks * tick
+    float riskD   = (entryPx - stopPx) / tick * tickValue * qty
+    if stopPx < entryPx and (maxRisk == 0 or riskD <= maxRisk)
+        float tpPx = entryPx + tpTicks * tick
+        strategy.entry("Long", strategy.long, qty = qty, limit = useLimit ? entryPx : na,
+             alert_message = bracket ? f_entryMsg("buy", entryPx, tpPx, stopPx) : '{"ticker":"' + syminfo.ticker + '","action":"buy","quantity":' + str.tostring(qty) + '}')
+        strategy.exit("Long Exit", "Long", profit = tpTicks,
+             stop = slMode == "Beyond sweep" ? stopPx : na, loss = slMode == "Fixed $" ? slTicks : na,
+             comment_profit = "TP $" + str.tostring(tpDollars), comment_loss = "SL",
+             alert_message = exitMsg, disable_alert = bracket)
+        activeStop   := slMode == "Beyond sweep" ? stopPx : na
+        pendLongBar  := bar_index
+        longSweepBar := na              // sweep used up
+
+if shortTrig and shortOK and canTrade and na(pendLongBar)
+    float entryPx = useLimit ? math.round_to_mintick(entryLevel == "Edge" ? shortBot : (shortTop + shortBot) / 2) : close
+    float stopPx  = slMode == "Beyond sweep" ? shortSweepPx + slBuffer * tick : entryPx + slTicks * tick
+    float riskD   = (stopPx - entryPx) / tick * tickValue * qty
+    if stopPx > entryPx and (maxRisk == 0 or riskD <= maxRisk)
+        float tpPx = entryPx - tpTicks * tick
+        strategy.entry("Short", strategy.short, qty = qty, limit = useLimit ? entryPx : na,
+             alert_message = bracket ? f_entryMsg("sell", entryPx, tpPx, stopPx) : '{"ticker":"' + syminfo.ticker + '","action":"sell","quantity":' + str.tostring(qty) + '}')
+        strategy.exit("Short Exit", "Short", profit = tpTicks,
+             stop = slMode == "Beyond sweep" ? stopPx : na, loss = slMode == "Fixed $" ? slTicks : na,
+             comment_profit = "TP $" + str.tostring(tpDollars), comment_loss = "SL",
+             alert_message = exitMsg, disable_alert = bracket)
+        activeStop    := slMode == "Beyond sweep" ? stopPx : na
+        pendShortBar  := bar_index
+        shortSweepBar := na
+
+// Unfilled limits: cancel after N bars or once the entry window closes
+if not na(pendLongBar) and newFills == 0 and bar_index > pendLongBar
+    if bar_index - pendLongBar >= limitExpiry or not inEntry
+        strategy.cancel("Long")
+        strategy.cancel("Long Exit")
+        pendLongBar := na
+if not na(pendShortBar) and newFills == 0 and bar_index > pendShortBar
+    if bar_index - pendShortBar >= limitExpiry or not inEntry
+        strategy.cancel("Short")
+        strategy.cancel("Short Exit")
+        pendShortBar := na
+
+// Flatten outside the hold window
+if strategy.position_size != 0 and not inHold
+    strategy.close_all(comment = "Window closed", alert_message = exitMsg)
+
+// ───────────────────────── Visuals ─────────────────────────
+bgcolor(inEntry ? color.new(color.blue, 93) : na, title = "Entry window")
+
+posLong  = strategy.position_size > 0
+posShort = strategy.position_size < 0
+avgPx    = strategy.position_avg_price
+tpLine   = posLong ? avgPx + tpTicks * tick : posShort ? avgPx - tpTicks * tick : na
+slLine   = not na(activeStop) ? activeStop : posLong ? avgPx - slTicks * tick : posShort ? avgPx + slTicks * tick : na
+plot(tpLine, "Take profit", color.new(color.lime, 0), 2, plot.style_linebr)
+plot(posLong or posShort ? slLine : na, "Stop loss", color.new(color.red, 0), 2, plot.style_linebr)
+plot(posLong or posShort ? avgPx : na, "Entry", color.new(color.gray, 0), 1, plot.style_linebr)
+
+plotshape(longTrig, "Long trigger", shape.triangleup, location.belowbar, color.new(color.lime, 0), size = size.tiny)
+plotshape(shortTrig, "Short trigger", shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.tiny)
+
+var table dash = table.new(position.top_right, 2, 5, bgcolor = color.new(color.black, 30), border_width = 1)
+if showDash and barstate.islast
+    table.cell(dash, 0, 0, "Symbol", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 0, syminfo.ticker + "  x" + str.tostring(qty), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 1, "$ / tick", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 1, "$" + str.tostring(tickValue, "#.##"), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 2, "TP $" + str.tostring(tpDollars), text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 2, str.tostring(tpTicks) + " ticks / " + str.tostring(tpTicks * tick, format.mintick) + " pts", text_color = color.lime, text_size = size.small)
+    table.cell(dash, 0, 3, "Trades today", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 3, str.tostring(tradesToday) + " / " + str.tostring(maxTrades) + (wonToday and stopOnWin ? "  (done ✔)" : ""), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 4, "Armed", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 4, (longActive ? "LONG " : "") + (shortActive ? "SHORT" : "") + (not longActive and not shortActive ? "waiting for sweep" : ""), text_color = color.yellow, text_size = size.small)
