@@ -35,3 +35,14 @@ Fills are conservative:
 - **The sample is small.** It's 10–15 trades per market, so one lucky week moves the numbers a lot.
 - **It trades rarely.** That's about 1 trade a week per market. It is not a $300–500/day system.
 - **Only 10 weeks of data were available.** Forward-test on sim or an eval before using it on a funded account.
+
+## TradingView cross-check (v3 defaults, 5m, Oct 12 – Nov 6 2026)
+
+| Market | TradingView | Python port, same dates |
+|--------|-------------|-------------------------|
+| ES | 7 trades, 4 wins, +$1,572, PF 4.8, DD $285 | 7 trades, 5 wins, +$2,197 |
+| NQ | 3 trades, 0 wins, -$417 | 3 trades, 1 win, +$313 |
+
+- **ES lines up** between the two engines.
+- **NQ differs by one trade** (a win in Python, a loss in TradingView). The data feeds differ slightly: Yahoo vs TradingView's back-adjusted NQ1!.
+- **Recommendation: run ES only, 1 contract.**
