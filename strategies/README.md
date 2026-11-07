@@ -19,7 +19,7 @@
 5. **Exits:**
    - **TP:** a fixed dollar amount, $500 by default. It is converted to ticks from the symbol's tick value and your contract count.
    - **SL:** just past the sweep wick plus a buffer, or a fixed dollar amount.
-   - **Skip rule:** the bot skips a setup if the risk is more than the "max risk $" setting.
+   - **Max risk:** if the stop past the sweep is wider than "Max risk per trade ($)", the bot pulls the stop in to cap the loss (default). You can switch it to skip those setups instead.
 6. **Guard rails:**
    - max trades per day
    - optionally stop for the day after a winner
@@ -43,7 +43,8 @@ If you trade more contracts, the TP distance shrinks: on 2 NQ, $500 is 12.5 pts.
 
 1. In TradingView, open the **Pine Editor**, paste in the file, click **Save**, then **Add to chart**.
 2. Use a futures chart such as `NQ1!` or `ES1!` on a 1m–5m timeframe.
-3. Check the **Strategy Tester** tab for results. Adjust inputs in the settings (gear icon).
+3. The info panel (top right) shows how many signals fired and why any were skipped (stop too wide, already in a trade or day limit hit, limit order never filled). Use it to tune the settings.
+4. Check the **Strategy Tester** tab for results. Adjust inputs in the settings (gear icon).
 
 ## Auto-execute (optional)
 

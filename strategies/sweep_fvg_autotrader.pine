@@ -48,7 +48,9 @@ tpDollars   = input.float(500, "Take profit ($ total)", minval = 1, group = grpR
 slMode      = input.string("Beyond sweep", "Stop loss", options = ["Beyond sweep", "Fixed $"], group = grpR)
 slDollars   = input.float(250, "Fixed stop ($ total)", minval = 1, group = grpR)
 slBuffer    = input.int(4, "Stop buffer past sweep wick (ticks)", minval = 0, group = grpR)
-maxRisk     = input.float(750, "Skip trade if risk is more than ($)", minval = 0, group = grpR, tooltip = "0 = no limit")
+maxRisk     = input.float(750, "Max risk per trade ($)", minval = 0, group = grpR, tooltip = "0 = no limit")
+wideStop    = input.string("Cap stop at max risk", "If stop is wider than max risk", options = ["Cap stop at max risk", "Skip trade"], group = grpR,
+     tooltip = "Cap: still take the trade, but the stop is pulled in so you never lose more than max risk.\nSkip: only take setups where the stop past the sweep fits inside max risk.")
 maxTrades   = input.int(2, "Max trades per day", minval = 1, group = grpR)
 stopOnWin   = input.bool(true, "Done for the day after a winner", group = grpR)
 
@@ -259,37 +261,72 @@ noPending = na(pendLongBar) and na(pendShortBar)
 dayOK     = tradesToday < maxTrades and not (stopOnWin and wonToday)
 canTrade  = inEntry and flat and noPending and dayOK
 
-if longTrig and longOK and canTrade
+// Diagnostics: why are (or aren't) trades happening?
+var int sigAll     = 0
+var int sigWindow  = 0
+var int skipRisk   = 0
+var int skipBusy   = 0
+var int limitMiss  = 0
+var float activeLossTicks = na
+
+longSig  = longTrig and longOK
+shortSig = shortTrig and shortOK
+if longSig or shortSig
+    sigAll += 1
+    if inEntry
+        sigWindow += 1
+        if not canTrade
+            skipBusy += 1
+
+maxRiskTicks = maxRisk > 0 ? math.floor(maxRisk / (tickValue * qty)) : 0
+
+if longSig and canTrade
     float entryPx = useLimit ? math.round_to_mintick(entryLevel == "Edge" ? longTop : (longTop + longBot) / 2) : close
     float stopPx  = slMode == "Beyond sweep" ? longSweepPx - slBuffer * tick : entryPx - slTicks * tick
-    float riskD   = (entryPx - stopPx) / tick * tickValue * qty
-    if stopPx < entryPx and (maxRisk == 0 or riskD <= maxRisk)
+    bool  capped  = false
+    if maxRiskTicks > 0 and (entryPx - stopPx) / tick > maxRiskTicks and wideStop == "Cap stop at max risk"
+        stopPx := entryPx - maxRiskTicks * tick
+        capped := true
+    float riskTicks = math.round((entryPx - stopPx) / tick)
+    if stopPx < entryPx and (maxRiskTicks == 0 or riskTicks <= maxRiskTicks)
         float tpPx = entryPx + tpTicks * tick
+        useStopPx  = slMode == "Beyond sweep" and not capped
         strategy.entry("Long", strategy.long, qty = qty, limit = useLimit ? entryPx : na,
              alert_message = bracket ? f_entryMsg("buy", entryPx, tpPx, stopPx) : '{"ticker":"' + syminfo.ticker + '","action":"buy","quantity":' + str.tostring(qty) + '}')
         strategy.exit("Long Exit", "Long", profit = tpTicks,
-             stop = slMode == "Beyond sweep" ? stopPx : na, loss = slMode == "Fixed $" ? slTicks : na,
+             stop = useStopPx ? stopPx : na, loss = useStopPx ? na : riskTicks,
              comment_profit = "TP $" + str.tostring(tpDollars), comment_loss = "SL",
              alert_message = exitMsg, disable_alert = bracket)
-        activeStop   := slMode == "Beyond sweep" ? stopPx : na
-        pendLongBar  := bar_index
-        longSweepBar := na              // sweep used up
+        activeStop      := useStopPx ? stopPx : na
+        activeLossTicks := riskTicks
+        pendLongBar     := bar_index
+        longSweepBar    := na              // sweep used up
+    else
+        skipRisk += 1
 
-if shortTrig and shortOK and canTrade and na(pendLongBar)
+if shortSig and canTrade and na(pendLongBar)
     float entryPx = useLimit ? math.round_to_mintick(entryLevel == "Edge" ? shortBot : (shortTop + shortBot) / 2) : close
     float stopPx  = slMode == "Beyond sweep" ? shortSweepPx + slBuffer * tick : entryPx + slTicks * tick
-    float riskD   = (stopPx - entryPx) / tick * tickValue * qty
-    if stopPx > entryPx and (maxRisk == 0 or riskD <= maxRisk)
+    bool  capped  = false
+    if maxRiskTicks > 0 and (stopPx - entryPx) / tick > maxRiskTicks and wideStop == "Cap stop at max risk"
+        stopPx := entryPx + maxRiskTicks * tick
+        capped := true
+    float riskTicks = math.round((stopPx - entryPx) / tick)
+    if stopPx > entryPx and (maxRiskTicks == 0 or riskTicks <= maxRiskTicks)
         float tpPx = entryPx - tpTicks * tick
+        useStopPx  = slMode == "Beyond sweep" and not capped
         strategy.entry("Short", strategy.short, qty = qty, limit = useLimit ? entryPx : na,
              alert_message = bracket ? f_entryMsg("sell", entryPx, tpPx, stopPx) : '{"ticker":"' + syminfo.ticker + '","action":"sell","quantity":' + str.tostring(qty) + '}')
         strategy.exit("Short Exit", "Short", profit = tpTicks,
-             stop = slMode == "Beyond sweep" ? stopPx : na, loss = slMode == "Fixed $" ? slTicks : na,
+             stop = useStopPx ? stopPx : na, loss = useStopPx ? na : riskTicks,
              comment_profit = "TP $" + str.tostring(tpDollars), comment_loss = "SL",
              alert_message = exitMsg, disable_alert = bracket)
-        activeStop    := slMode == "Beyond sweep" ? stopPx : na
-        pendShortBar  := bar_index
-        shortSweepBar := na
+        activeStop      := useStopPx ? stopPx : na
+        activeLossTicks := riskTicks
+        pendShortBar    := bar_index
+        shortSweepBar   := na
+    else
+        skipRisk += 1
 
 // Unfilled limits: cancel after N bars or once the entry window closes
 if not na(pendLongBar) and newFills == 0 and bar_index > pendLongBar
@@ -297,11 +334,13 @@ if not na(pendLongBar) and newFills == 0 and bar_index > pendLongBar
         strategy.cancel("Long")
         strategy.cancel("Long Exit")
         pendLongBar := na
+        limitMiss += 1
 if not na(pendShortBar) and newFills == 0 and bar_index > pendShortBar
     if bar_index - pendShortBar >= limitExpiry or not inEntry
         strategy.cancel("Short")
         strategy.cancel("Short Exit")
         pendShortBar := na
+        limitMiss += 1
 
 // Flatten outside the hold window
 if strategy.position_size != 0 and not inHold
@@ -314,7 +353,7 @@ posLong  = strategy.position_size > 0
 posShort = strategy.position_size < 0
 avgPx    = strategy.position_avg_price
 tpLine   = posLong ? avgPx + tpTicks * tick : posShort ? avgPx - tpTicks * tick : na
-slLine   = not na(activeStop) ? activeStop : posLong ? avgPx - slTicks * tick : posShort ? avgPx + slTicks * tick : na
+slLine   = not na(activeStop) ? activeStop : posLong ? avgPx - activeLossTicks * tick : posShort ? avgPx + activeLossTicks * tick : na
 plot(tpLine, "Take profit", color.new(color.lime, 0), 2, plot.style_linebr)
 plot(posLong or posShort ? slLine : na, "Stop loss", color.new(color.red, 0), 2, plot.style_linebr)
 plot(posLong or posShort ? avgPx : na, "Entry", color.new(color.gray, 0), 1, plot.style_linebr)
@@ -322,7 +361,7 @@ plot(posLong or posShort ? avgPx : na, "Entry", color.new(color.gray, 0), 1, plo
 plotshape(longTrig, "Long trigger", shape.triangleup, location.belowbar, color.new(color.lime, 0), size = size.tiny)
 plotshape(shortTrig, "Short trigger", shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.tiny)
 
-var table dash = table.new(position.top_right, 2, 5, bgcolor = color.new(color.black, 30), border_width = 1)
+var table dash = table.new(position.top_right, 2, 9, bgcolor = color.new(color.black, 30), border_width = 1)
 if showDash and barstate.islast
     table.cell(dash, 0, 0, "Symbol", text_color = color.white, text_size = size.small)
     table.cell(dash, 1, 0, syminfo.ticker + "  x" + str.tostring(qty), text_color = color.white, text_size = size.small)
@@ -334,3 +373,11 @@ if showDash and barstate.islast
     table.cell(dash, 1, 3, str.tostring(tradesToday) + " / " + str.tostring(maxTrades) + (wonToday and stopOnWin ? "  (done ✔)" : ""), text_color = color.white, text_size = size.small)
     table.cell(dash, 0, 4, "Armed", text_color = color.white, text_size = size.small)
     table.cell(dash, 1, 4, (longActive ? "LONG " : "") + (shortActive ? "SHORT" : "") + (not longActive and not shortActive ? "waiting for sweep" : ""), text_color = color.yellow, text_size = size.small)
+    table.cell(dash, 0, 5, "Signals (all / in window)", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 5, str.tostring(sigAll) + " / " + str.tostring(sigWindow), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 6, "Skipped: stop too wide", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 6, str.tostring(skipRisk), text_color = color.orange, text_size = size.small)
+    table.cell(dash, 0, 7, "Skipped: busy / day limit", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 7, str.tostring(skipBusy), text_color = color.orange, text_size = size.small)
+    table.cell(dash, 0, 8, "Limit never filled", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 8, str.tostring(limitMiss), text_color = color.orange, text_size = size.small)
