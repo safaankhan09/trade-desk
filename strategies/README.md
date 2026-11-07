@@ -2,42 +2,47 @@
 
 `sweep_fvg_autotrader.pine` is a Pine Script v6 **strategy**. You can backtest it on TradingView and send its alerts to a broker bridge to auto-execute.
 
-## What it does
+## What it does (v2, prop-firm edition)
 
-1. **Liquidity:** swing highs and lows (pivot strength 5 by default) are treated as resting liquidity.
-2. **Sweep:** a candle wicks through one of those levels and closes back inside it.
-   - Lows taken (SSL sweep): the bot looks for a **long**.
-   - Highs taken (BSL sweep): the bot looks for a **short**.
+1. **Liquidity:** Asia high/low (20:00–00:00 NY), London high/low (02:00–05:00 NY) and the prior day high/low. Swing pivots are optional and off by default. Levels are drawn as dotted lines (orange for highs, aqua for lows).
+2. **Sweep:** a candle wicks through one of those levels and closes back inside it. The label says which level was taken, for example "Asia L swept".
+   - Lows taken: the bot looks for a **long**.
+   - Highs taken: the bot looks for a **short**.
 3. **Trigger** (within 20 bars of the sweep):
    - **IFVG model:** price closes through an opposing FVG, flipping it into an inverse FVG.
-     After an SSL sweep, a close above a bearish FVG triggers a long. After a BSL sweep, a close below a bullish FVG triggers a short.
    - **FVG model:** a fresh FVG forms in the trade direction after the sweep.
    - **Both:** whichever happens first.
-4. **Entry:** only inside the **entry window** (default 9:30–11:00 NY). The entry is either
-   - a limit order on the retest of the zone (edge or CE / 50%), or
-   - a market order at the close of the trigger candle.
-5. **Exits:**
-   - **TP:** a fixed dollar amount, $500 by default. It is converted to ticks from the symbol's tick value and your contract count.
-   - **SL:** just past the sweep wick plus a buffer, or a fixed dollar amount.
-   - **Max risk:** if the stop past the sweep is wider than "Max risk per trade ($)", the bot pulls the stop in to cap the loss (default). You can switch it to skip those setups instead.
-6. **Guard rails:**
-   - max trades per day
-   - optionally stop for the day after a winner
-   - flatten anything still open when the hold window ends (default 15:55)
-   - cancel limit orders that don't fill after N bars
+4. **Entry:** only inside the **entry window** (default 9:30–11:00 NY), either as a limit order on the retest (edge or CE / 50%) or as a market order at the trigger candle's close.
+5. **Size, stop and target:**
+   - **Stop:** just past the sweep wick, plus a buffer.
+   - **Risk-based sizing (default):** the bot takes as many contracts as fit inside "Max risk per trade" ($250) for that stop, up to "Max contracts" (2). If even 1 contract doesn't fit, it skips the trade.
+   - **TP:** a fixed dollar amount ($500), split across however many contracts it took.
+   - **Min R:R filter:** skips trades below 1.5R by default.
+6. **Prop firm guard:**
+   - **Trailing drawdown:** tracks an end-of-day trailing drawdown ($1,000, with the floor locking at start balance + $100). If the backtest would have blown the account, it stops trading and the panel shows the date.
+   - **Daily loss stop:** $500 by default.
+   - **Optional daily profit lock.**
+   - **Max trades per day**, and **done for the day after a winner**.
+   - **Flatten** at 15:55 NY.
 
-## What $500 TP means per contract (1 lot)
+### Lucid 25K setup
 
-| Symbol | $/tick | $500 = |
-|--------|-------:|-------:|
-| NQ     | $5.00  | 100 ticks / 25 pts |
-| ES     | $12.50 | 40 ticks / 10 pts |
-| MNQ    | $0.50  | 1000 ticks / 250 pts |
-| MES    | $1.25  | 400 ticks / 100 pts |
-| GC     | $10.00 | 50 ticks / $5.00 |
-| CL     | $10.00 | 50 ticks / $0.50 |
+| Trading | Max contracts | Risk per trade |
+|---------|---------------|----------------|
+| Minis (NQ/ES) | 2 | $200–300 |
+| Micros (MNQ/MES) | 20 | $200–300 |
 
-If you trade more contracts, the TP distance shrinks: on 2 NQ, $500 is 12.5 pts. The info panel on the chart shows the exact number.
+Micros size more precisely. With 20 MNQ, the bot can take 7 contracts if that's what fits the stop, instead of being stuck at 1 or 2 minis.
+
+The drawdown numbers are inputs, so check them against your plan's rules on Lucid's site.
+
+In **Properties**, set commission to what you actually pay per contract per side.
+
+### Info panel
+
+- **Last plan:** contracts, stop and TP in points, and R:R for the most recent order.
+- **Room to DD floor:** how far equity is above the trailing drawdown floor.
+- **Skip counters:** setups skipped for risk/R:R, skipped because you were busy or done for the day, and limit orders that never filled.
 
 ## Load it
 

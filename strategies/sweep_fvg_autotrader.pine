@@ -1,25 +1,28 @@
 //@version=6
-// Sweep + FVG / IFVG Auto Trader
+// Sweep + FVG / IFVG Auto Trader  v2  (prop-firm edition)
 // ------------------------------------------------------------
 // Idea:
-//   1. Mark swing highs/lows as resting liquidity.
-//   2. Wait for price to sweep one (wick through, close back inside).
+//   1. Liquidity = Asia high/low, London high/low, prior-day high/low
+//      (optionally swing pivots too).
+//   2. Wait for price to sweep one of those levels (wick through, close back inside).
 //   3. After a SELL-SIDE sweep (lows taken) look for a LONG:
 //        IFVG model -> price closes UP through a bearish FVG (inversion)
 //        FVG model  -> a fresh bullish FVG prints after the sweep
 //      After a BUY-SIDE sweep (highs taken) the same logic flips SHORT.
 //   4. Enter only inside the time window, on a retest of the zone
 //      (limit order) or at the close of the trigger candle.
-//   5. Take profit is a fixed dollar amount (default $500). Stop goes
-//      just beyond the sweep wick, or a fixed dollar amount.
+//   5. Fixed-dollar take profit (default $500). Stop just past the sweep wick.
+//      Size is picked so the stop never risks more than "Max risk per trade".
+//   6. Prop-firm guard: trailing end-of-day drawdown floor, daily loss stop,
+//      daily profit lock, max trades per day.
 // Note: margin_long/short = 0 because futures are margined. With v6's default
-// 100% margin, 1 NQ (~$540k notional) gets rejected on a $50k test account.
+// 100% margin, 1 NQ (~$540k notional) gets rejected on a small test account.
 // ------------------------------------------------------------
-strategy("Sweep + FVG/IFVG Auto Trader", shorttitle = "Sweep FVG Bot", overlay = true,
+strategy("Sweep + FVG/IFVG Auto Trader v2", shorttitle = "Sweep FVG Bot", overlay = true,
      default_qty_type = strategy.fixed, default_qty_value = 1,
-     initial_capital = 50000, currency = currency.USD,
-     commission_type = strategy.commission.cash_per_contract, commission_value = 2.5,
-     slippage = 1, max_boxes_count = 300, max_labels_count = 300, margin_long = 0, margin_short = 0)
+     initial_capital = 25000, currency = currency.USD,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 1.0,
+     slippage = 1, max_boxes_count = 300, max_labels_count = 300, max_lines_count = 300, margin_long = 0, margin_short = 0)
 
 // ───────────────────────── Inputs ─────────────────────────
 grpT = "Time"
@@ -27,12 +30,21 @@ tz          = input.string("America/New_York", "Timezone", group = grpT)
 entrySess   = input.session("0930-1100", "Entry window", group = grpT, tooltip = "New trades only open inside this window.")
 holdSess    = input.session("0930-1555", "Hold window", group = grpT, tooltip = "Any open trade is flattened once price leaves this window.")
 
+grpL = "Liquidity (what counts as a sweep)"
+useAsia     = input.bool(true, "Asia high/low", inline = "asia", group = grpL)
+asiaSess    = input.session("2000-0000", "", inline = "asia", group = grpL)
+useLondon   = input.bool(true, "London high/low", inline = "lon", group = grpL)
+lonSess     = input.session("0200-0500", "", inline = "lon", group = grpL)
+usePrevDay  = input.bool(true, "Prior day high/low", group = grpL)
+useSwings   = input.bool(false, "Swing pivots", inline = "sw", group = grpL)
+pivotLen    = input.int(10, "strength", minval = 1, inline = "sw", group = grpL)
+needReclaim = input.bool(true, "Sweep must close back inside the level", group = grpL)
+showLiq     = input.bool(true, "Draw liquidity lines", group = grpL)
+
 grpS = "Setup"
 model       = input.string("IFVG", "Entry model", options = ["IFVG", "FVG", "Both"], group = grpS,
      tooltip = "IFVG: after the sweep, price closes through an opposing FVG (inversion).\nFVG: after the sweep, a new FVG in the trade direction forms.")
 tradeDir    = input.string("Both", "Direction", options = ["Both", "Long only", "Short only"], group = grpS)
-pivotLen    = input.int(5, "Swing strength (bars each side)", minval = 1, group = grpS)
-needReclaim = input.bool(true, "Sweep must close back inside the level", group = grpS)
 sweepExpiry = input.int(20, "Bars allowed from sweep to entry signal", minval = 1, group = grpS)
 fvgNear     = input.int(15, "IFVG: FVG must form within N bars before sweep", minval = 0, group = grpS)
 minFvgTicks = input.int(4, "Min FVG size (ticks)", minval = 1, group = grpS)
@@ -44,21 +56,31 @@ entryLevel  = input.string("Edge", "Retest level", options = ["Edge", "CE (50%)"
      tooltip = "Edge = first touch of the zone. CE = midpoint (consequent encroachment).")
 limitExpiry = input.int(10, "Cancel unfilled limit after (bars)", minval = 1, group = grpE)
 
-grpR = "Risk"
-qty         = input.int(1, "Contracts", minval = 1, group = grpR)
+grpR = "Risk & sizing"
+sizing      = input.string("Risk-based", "Position sizing", options = ["Risk-based", "Fixed contracts"], group = grpR,
+     tooltip = "Risk-based: buys as many contracts as fit inside 'Max risk per trade' for that stop (up to Max contracts).\nFixed: always trades 'Fixed contracts'.")
+maxQty      = input.int(2, "Max contracts", minval = 1, group = grpR, tooltip = "Lucid 25K: 2 minis or 20 micros.")
+fixedQty    = input.int(2, "Fixed contracts", minval = 1, group = grpR)
+riskPerTrade = input.float(250, "Max risk per trade ($)", minval = 1, group = grpR)
 tpDollars   = input.float(500, "Take profit ($ total)", minval = 1, group = grpR)
+minRR       = input.float(1.5, "Min reward:risk (0 = off)", minval = 0, step = 0.25, group = grpR)
 slMode      = input.string("Beyond sweep", "Stop loss", options = ["Beyond sweep", "Fixed $"], group = grpR)
 slDollars   = input.float(250, "Fixed stop ($ total)", minval = 1, group = grpR)
 slBuffer    = input.int(4, "Stop buffer past sweep wick (ticks)", minval = 0, group = grpR)
-maxRisk     = input.float(750, "Max risk per trade ($)", minval = 0, group = grpR, tooltip = "0 = no limit")
-wideStop    = input.string("Cap stop at max risk", "If stop is wider than max risk", options = ["Cap stop at max risk", "Skip trade"], group = grpR,
-     tooltip = "Cap: still take the trade, but the stop is pulled in so you never lose more than max risk.\nSkip: only take setups where the stop past the sweep fits inside max risk.")
-maxTrades   = input.int(2, "Max trades per day", minval = 1, group = grpR)
-stopOnWin   = input.bool(true, "Done for the day after a winner", group = grpR)
+wideStop    = input.string("Skip trade", "If stop is too wide for even 1 contract", options = ["Skip trade", "Cap stop at max risk"], group = grpR)
+
+grpP = "Prop firm guard"
+useDDGuard  = input.bool(true, "Track trailing drawdown (stop if blown)", group = grpP)
+acctDD      = input.float(1000, "Max drawdown ($, end-of-day trailing)", minval = 0, group = grpP)
+lockAbove   = input.float(100, "Floor locks at start balance + ($)", minval = 0, group = grpP)
+dailyLoss   = input.float(500, "Stop for the day after losing ($, 0 = off)", minval = 0, group = grpP)
+dailyProfit = input.float(0, "Stop for the day after making ($, 0 = off)", minval = 0, group = grpP)
+maxTrades   = input.int(2, "Max trades per day", minval = 1, group = grpP)
+stopOnWin   = input.bool(true, "Done for the day after a winner", group = grpP)
 
 grpA = "Alerts / automation"
 alertStyle  = input.string("Bracket", "Alert style", options = ["Bracket", "Signals"], group = grpA,
-     tooltip = "Bracket: the entry alert carries TP + SL prices so your broker holds the bracket; exit alerts are muted (except the end-of-window flatten).\nSignals: entry and every exit send their own alert.")
+     tooltip = "Bracket: the entry alert carries TP + SL prices so your broker holds the bracket; exit alerts are muted (except forced flattens).\nSignals: entry and every exit send their own alert.")
 
 grpV = "Visuals"
 showFvg     = input.bool(true, "Draw FVGs", group = grpV)
@@ -70,8 +92,6 @@ tick      = syminfo.mintick
 // $ per tick per contract, converted to the account currency. Some contracts
 // (sugar, coffee, cotton...) are quoted in cents (USX), so raw pointvalue is 100x too big.
 tickValue = strategy.convert_to_account(syminfo.mintick * syminfo.pointvalue)
-tpTicks   = math.ceil(tpDollars / (tickValue * qty))
-slTicks   = math.ceil(slDollars / (tickValue * qty))
 useLimit  = entryType == "Retest (limit)"
 useIFVG   = model != "FVG"
 useFVG    = model != "IFVG"
@@ -82,13 +102,23 @@ bracket   = alertStyle == "Bracket"
 inEntry = not na(time(timeframe.period, entrySess, tz))
 inHold  = not na(time(timeframe.period, holdSess, tz))
 
-// ───────────────────────── Daily bookkeeping ─────────────────────────
-var int  tradesToday = 0
-var bool wonToday    = false
-newDay = bar_index == 0 or dayofmonth(time, tz) != dayofmonth(time[1], tz)
+// ───────────────────────── Daily bookkeeping & prop guard ─────────────────────────
+var int   tradesToday = 0
+var bool  wonToday    = false
+var bool  dayLocked   = false
+var float dayStartEq  = strategy.initial_capital
+var float peakEod     = strategy.initial_capital
+var bool  blown       = false
+var int   blownTime   = na
+
+// A new trading day starts with each new daily bar (18:00 NY for CME futures)
+newDay = bar_index == 0 or timeframe.change("D")
 if newDay
     tradesToday := 0
     wonToday    := false
+    dayLocked   := false
+    dayStartEq  := strategy.equity
+    peakEod     := math.max(peakEod, strategy.equity)
 
 totalTrades = strategy.closedtrades + strategy.opentrades
 newFills    = totalTrades - nz(totalTrades[1])
@@ -97,20 +127,84 @@ if newFills > 0
 if strategy.wintrades > nz(strategy.wintrades[1])
     wonToday := true
 
-// ───────────────────────── Liquidity (swing levels) ─────────────────────────
-var array<float> liqHighs = array.new<float>()
-var array<float> liqLows  = array.new<float>()
+ddFloor     = math.min(peakEod - acctDD, strategy.initial_capital + lockAbove)
+roomToFloor = strategy.equity - ddFloor
+dayPnL      = strategy.equity - dayStartEq
 
+if useDDGuard and not blown and strategy.equity <= ddFloor
+    blown     := true
+    blownTime := time
+    strategy.close_all(comment = "Drawdown hit")
+if not dayLocked and dailyLoss > 0 and dayPnL <= -dailyLoss
+    dayLocked := true
+    strategy.close_all(comment = "Daily loss stop")
+if not dayLocked and dailyProfit > 0 and dayPnL >= dailyProfit
+    dayLocked := true
+    strategy.close_all(comment = "Daily profit lock")
+
+// ───────────────────────── Liquidity levels ─────────────────────────
+type Liq
+    float  price
+    string name
+    line   ln
+
+var array<Liq> liqHighs = array.new<Liq>()
+var array<Liq> liqLows  = array.new<Liq>()
+
+colLiqH = color.new(color.orange, 20)
+colLiqL = color.new(color.aqua, 20)
+
+// Add a level. Named session levels replace yesterday's level with the same name.
+f_addLiq(array<Liq> arr, float price, string name, bool isHigh) =>
+    if name != "Swing" and arr.size() > 0
+        for i = arr.size() - 1 to 0
+            Liq old = arr.get(i)
+            if old.name == name
+                if not na(old.ln)
+                    old.ln.delete()
+                arr.remove(i)
+    line ln = showLiq ? line.new(bar_index, price, bar_index, price, color = isHigh ? colLiqH : colLiqL, style = line.style_dotted, width = 1) : na
+    arr.push(Liq.new(price, name, ln))
+    if arr.size() > 20
+        Liq gone = arr.shift()
+        if not na(gone.ln)
+            gone.ln.delete()
+    arr.size()
+
+// Running high/low of a session; `ended` is true on the first bar after it closes.
+f_sess(string sess) =>
+    bool inS = not na(time(timeframe.period, sess, tz))
+    var float hi = na
+    var float lo = na
+    if inS and not inS[1]
+        hi := high
+        lo := low
+    else if inS
+        hi := math.max(hi, high)
+        lo := math.min(lo, low)
+    bool ended = not inS and inS[1]
+    [hi, lo, ended]
+
+[asiaH, asiaL, asiaEnd] = f_sess(asiaSess)
+[lonH, lonL, lonEnd]    = f_sess(lonSess)
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
 ph = ta.pivothigh(high, pivotLen, pivotLen)
 pl = ta.pivotlow(low, pivotLen, pivotLen)
-if not na(ph)
-    liqHighs.push(ph)
-    if liqHighs.size() > 10
-        liqHighs.shift()
-if not na(pl)
-    liqLows.push(pl)
-    if liqLows.size() > 10
-        liqLows.shift()
+
+if useAsia and asiaEnd and not na(asiaH)
+    f_addLiq(liqHighs, asiaH, "Asia H", true)
+    f_addLiq(liqLows, asiaL, "Asia L", false)
+if useLondon and lonEnd and not na(lonH)
+    f_addLiq(liqHighs, lonH, "London H", true)
+    f_addLiq(liqLows, lonL, "London L", false)
+if usePrevDay and not na(pdh) and pdh != nz(pdh[1])
+    f_addLiq(liqHighs, pdh, "PDH", true)
+if usePrevDay and not na(pdl) and pdl != nz(pdl[1])
+    f_addLiq(liqLows, pdl, "PDL", false)
+if useSwings and not na(ph)
+    f_addLiq(liqHighs, ph, "Swing", true)
+if useSwings and not na(pl)
+    f_addLiq(liqLows, pl, "Swing", false)
 
 // Sweep state. Long setups come from sell-side sweeps (lows taken).
 var int   longSweepBar  = na
@@ -118,7 +212,6 @@ var float longSweepPx   = na
 var int   shortSweepBar = na
 var float shortSweepPx  = na
 
-// Expire old sweeps / extend the sweep extreme while still waiting
 if not na(longSweepBar)
     if bar_index - longSweepBar > sweepExpiry
         longSweepBar := na
@@ -130,33 +223,41 @@ if not na(shortSweepBar)
     else if high > shortSweepPx
         shortSweepPx := high
 
-bool sweptHigh = false
-bool sweptLow  = false
+bool   sweptHigh = false
+bool   sweptLow  = false
+string highNames = ""
+string lowNames  = ""
 if liqHighs.size() > 0
     for i = liqHighs.size() - 1 to 0
-        lvl = liqHighs.get(i)
-        if high > lvl
-            if not needReclaim or close < lvl
+        Liq l = liqHighs.get(i)
+        if not na(l.ln)
+            l.ln.set_x2(bar_index)
+        if high > l.price
+            if not needReclaim or close < l.price
                 sweptHigh := true
+                highNames := highNames == "" ? l.name : highNames + " + " + l.name
             liqHighs.remove(i)          // level is taken either way
 if liqLows.size() > 0
     for i = liqLows.size() - 1 to 0
-        lvl = liqLows.get(i)
-        if low < lvl
-            if not needReclaim or close > lvl
+        Liq l = liqLows.get(i)
+        if not na(l.ln)
+            l.ln.set_x2(bar_index)
+        if low < l.price
+            if not needReclaim or close > l.price
                 sweptLow := true
+                lowNames := lowNames == "" ? l.name : lowNames + " + " + l.name
             liqLows.remove(i)
 
 if sweptLow
     longSweepBar := bar_index
     longSweepPx  := low
     if showSweeps
-        label.new(bar_index, low, "SSL sweep", style = label.style_label_up, color = color.new(color.teal, 20), textcolor = color.white, size = size.tiny)
+        label.new(bar_index, low, lowNames + " swept", style = label.style_label_up, color = color.new(color.teal, 20), textcolor = color.white, size = size.tiny)
 if sweptHigh
     shortSweepBar := bar_index
     shortSweepPx  := high
     if showSweeps
-        label.new(bar_index, high, "BSL sweep", style = label.style_label_down, color = color.new(color.maroon, 20), textcolor = color.white, size = size.tiny)
+        label.new(bar_index, high, highNames + " swept", style = label.style_label_down, color = color.new(color.maroon, 20), textcolor = color.white, size = size.tiny)
 
 longActive  = not na(longSweepBar)
 shortActive = not na(shortSweepBar)
@@ -183,7 +284,6 @@ bool  shortTrig = false
 float shortTop  = na
 float shortBot  = na
 
-// Walk existing FVGs: inversions, invalidations, ageing
 if fvgs.size() > 0
     for i = fvgs.size() - 1 to 0
         f = fvgs.get(i)
@@ -220,7 +320,6 @@ if fvgs.size() > 0
         if kill
             fvgs.remove(i)
 
-// New FVGs on this bar
 minGap  = minFvgTicks * tick
 bullGap = low > high[2] and low - high[2] >= minGap
 bearGap = high < low[2] and low[2] - high >= minGap
@@ -242,36 +341,76 @@ if bearGap
 if fvgs.size() > 40
     fvgs.shift()
 
+// ───────────────────────── Trade plan (size, stop, target) ─────────────────────────
+// Returns [ok, contracts, stopTicks, tpTicks, riskDollars, rr]
+f_plan(float entryPx, float structStop, bool isLong) =>
+    bool ok = true
+    int  q  = 0
+    int  slT = 0
+    if slMode == "Fixed $"
+        q   := sizing == "Fixed contracts" ? fixedQty : maxQty
+        slT := math.floor(slDollars / (tickValue * q))
+    else
+        float dist = isLong ? entryPx - structStop : structStop - entryPx
+        if dist <= 0
+            ok := false
+        else
+            slT := math.round(dist / tick)
+            if sizing == "Risk-based"
+                q := math.min(maxQty, math.floor(riskPerTrade / (slT * tickValue)))
+                if q < 1
+                    if wideStop == "Cap stop at max risk"
+                        q   := 1
+                        slT := math.floor(riskPerTrade / tickValue)
+                    else
+                        ok := false
+            else
+                q := fixedQty
+                if slT * tickValue * q > riskPerTrade
+                    if wideStop == "Cap stop at max risk"
+                        slT := math.floor(riskPerTrade / (tickValue * q))
+                    else
+                        ok := false
+    if ok and (q < 1 or slT < 1)
+        ok := false
+    int   tpT   = q > 0 ? math.ceil(tpDollars / (tickValue * q)) : 0
+    float riskD = slT * tickValue * q
+    float rr    = riskD > 0 ? tpDollars / riskD : 0.0
+    if ok and minRR > 0 and rr < minRR
+        ok := false
+    [ok, q, slT, tpT, riskD, rr]
+
 // ───────────────────────── Alert payloads ─────────────────────────
-f_entryMsg(string action, float px, float tp, float sl) =>
-    '{"ticker":"' + syminfo.ticker + '","action":"' + action + '","quantity":' + str.tostring(qty) +
+f_entryMsg(string action, int q, float px, float tp, float sl) =>
+    '{"ticker":"' + syminfo.ticker + '","action":"' + action + '","quantity":' + str.tostring(q) +
      ',"price":' + str.tostring(px, format.mintick) +
      ',"takeProfit":{"limitPrice":' + str.tostring(tp, format.mintick) + '}' +
      ',"stopLoss":{"type":"stop","stopPrice":' + str.tostring(sl, format.mintick) + '}}'
+f_sigMsg(string action, int q) =>
+    '{"ticker":"' + syminfo.ticker + '","action":"' + action + '","quantity":' + str.tostring(q) + '}'
 exitMsg = '{"ticker":"' + syminfo.ticker + '","action":"exit"}'
 
 // ───────────────────────── Orders ─────────────────────────
-var int   pendLongBar  = na
-var int   pendShortBar = na
-var float activeStop   = na
+var int    pendLongBar  = na
+var int    pendShortBar = na
+var int    activeTpT    = na
+var int    activeSlT    = na
+var string lastPlan     = "-"
 
-// A fill clears the pending flags
+var int sigAll     = 0
+var int sigWindow  = 0
+var int skipRisk   = 0
+var int skipBusy   = 0
+var int limitMiss  = 0
+
 if newFills > 0
     pendLongBar  := na
     pendShortBar := na
 
 flat      = strategy.position_size == 0
 noPending = na(pendLongBar) and na(pendShortBar)
-dayOK     = tradesToday < maxTrades and not (stopOnWin and wonToday)
+dayOK     = tradesToday < maxTrades and not (stopOnWin and wonToday) and not dayLocked and not blown
 canTrade  = inEntry and flat and noPending and dayOK
-
-// Diagnostics: why are (or aren't) trades happening?
-var int sigAll     = 0
-var int sigWindow  = 0
-var int skipRisk   = 0
-var int skipBusy   = 0
-var int limitMiss  = 0
-var float activeLossTicks = na
 
 longSig  = longTrig and longOK
 shortSig = shortTrig and shortOK
@@ -282,65 +421,56 @@ if longSig or shortSig
         if not canTrade
             skipBusy += 1
 
-maxRiskTicks = maxRisk > 0 ? math.floor(maxRisk / (tickValue * qty)) : 0
+f_planText(int q, int slT, int tpT, float rr) =>
+    str.tostring(q) + " ct | SL " + str.tostring(slT * tick, format.mintick) + " / TP " + str.tostring(tpT * tick, format.mintick) + " pts | " + str.tostring(rr, "#.#") + "R"
 
 if longSig and canTrade
     float entryPx = useLimit ? math.round_to_mintick(entryLevel == "Edge" ? longTop : (longTop + longBot) / 2) : close
-    float stopPx  = slMode == "Beyond sweep" ? longSweepPx - slBuffer * tick : entryPx - slTicks * tick
-    bool  capped  = false
-    if maxRiskTicks > 0 and (entryPx - stopPx) / tick > maxRiskTicks and wideStop == "Cap stop at max risk"
-        stopPx := entryPx - maxRiskTicks * tick
-        capped := true
-    float riskTicks = math.round((entryPx - stopPx) / tick)
-    if stopPx < entryPx and (maxRiskTicks == 0 or riskTicks <= maxRiskTicks)
-        float tpPx = entryPx + tpTicks * tick
-        useStopPx  = slMode == "Beyond sweep" and not capped
-        strategy.entry("Long", strategy.long, qty = qty, limit = useLimit ? entryPx : na,
-             alert_message = bracket ? f_entryMsg("buy", entryPx, tpPx, stopPx) : '{"ticker":"' + syminfo.ticker + '","action":"buy","quantity":' + str.tostring(qty) + '}')
-        strategy.exit("Long Exit", "Long", profit = tpTicks,
-             stop = useStopPx ? stopPx : na, loss = useStopPx ? na : riskTicks,
+    [ok, q, slT, tpT, riskD, rr] = f_plan(entryPx, longSweepPx - slBuffer * tick, true)
+    if ok
+        float tpPx = entryPx + tpT * tick
+        float slPx = entryPx - slT * tick
+        strategy.entry("Long", strategy.long, qty = q, limit = useLimit ? entryPx : na,
+             alert_message = bracket ? f_entryMsg("buy", q, entryPx, tpPx, slPx) : f_sigMsg("buy", q))
+        strategy.exit("Long Exit", "Long", profit = tpT, loss = slT,
              comment_profit = "TP $" + str.tostring(tpDollars), comment_loss = "SL",
              alert_message = exitMsg, disable_alert = bracket)
-        activeStop      := useStopPx ? stopPx : na
-        activeLossTicks := riskTicks
-        pendLongBar     := bar_index
-        longSweepBar    := na              // sweep used up
+        activeTpT    := tpT
+        activeSlT    := slT
+        lastPlan     := "L " + f_planText(q, slT, tpT, rr)
+        pendLongBar  := bar_index
+        longSweepBar := na              // sweep used up
     else
         skipRisk += 1
 
 if shortSig and canTrade and na(pendLongBar)
     float entryPx = useLimit ? math.round_to_mintick(entryLevel == "Edge" ? shortBot : (shortTop + shortBot) / 2) : close
-    float stopPx  = slMode == "Beyond sweep" ? shortSweepPx + slBuffer * tick : entryPx + slTicks * tick
-    bool  capped  = false
-    if maxRiskTicks > 0 and (stopPx - entryPx) / tick > maxRiskTicks and wideStop == "Cap stop at max risk"
-        stopPx := entryPx + maxRiskTicks * tick
-        capped := true
-    float riskTicks = math.round((stopPx - entryPx) / tick)
-    if stopPx > entryPx and (maxRiskTicks == 0 or riskTicks <= maxRiskTicks)
-        float tpPx = entryPx - tpTicks * tick
-        useStopPx  = slMode == "Beyond sweep" and not capped
-        strategy.entry("Short", strategy.short, qty = qty, limit = useLimit ? entryPx : na,
-             alert_message = bracket ? f_entryMsg("sell", entryPx, tpPx, stopPx) : '{"ticker":"' + syminfo.ticker + '","action":"sell","quantity":' + str.tostring(qty) + '}')
-        strategy.exit("Short Exit", "Short", profit = tpTicks,
-             stop = useStopPx ? stopPx : na, loss = useStopPx ? na : riskTicks,
+    [ok, q, slT, tpT, riskD, rr] = f_plan(entryPx, shortSweepPx + slBuffer * tick, false)
+    if ok
+        float tpPx = entryPx - tpT * tick
+        float slPx = entryPx + slT * tick
+        strategy.entry("Short", strategy.short, qty = q, limit = useLimit ? entryPx : na,
+             alert_message = bracket ? f_entryMsg("sell", q, entryPx, tpPx, slPx) : f_sigMsg("sell", q))
+        strategy.exit("Short Exit", "Short", profit = tpT, loss = slT,
              comment_profit = "TP $" + str.tostring(tpDollars), comment_loss = "SL",
              alert_message = exitMsg, disable_alert = bracket)
-        activeStop      := useStopPx ? stopPx : na
-        activeLossTicks := riskTicks
-        pendShortBar    := bar_index
-        shortSweepBar   := na
+        activeTpT     := tpT
+        activeSlT     := slT
+        lastPlan      := "S " + f_planText(q, slT, tpT, rr)
+        pendShortBar  := bar_index
+        shortSweepBar := na
     else
         skipRisk += 1
 
-// Unfilled limits: cancel after N bars or once the entry window closes
+// Unfilled limits: cancel after N bars, once the entry window closes, or when locked
 if not na(pendLongBar) and newFills == 0 and bar_index > pendLongBar
-    if bar_index - pendLongBar >= limitExpiry or not inEntry
+    if bar_index - pendLongBar >= limitExpiry or not inEntry or dayLocked or blown
         strategy.cancel("Long")
         strategy.cancel("Long Exit")
         pendLongBar := na
         limitMiss += 1
 if not na(pendShortBar) and newFills == 0 and bar_index > pendShortBar
-    if bar_index - pendShortBar >= limitExpiry or not inEntry
+    if bar_index - pendShortBar >= limitExpiry or not inEntry or dayLocked or blown
         strategy.cancel("Short")
         strategy.cancel("Short Exit")
         pendShortBar := na
@@ -356,32 +486,29 @@ bgcolor(inEntry ? color.new(color.blue, 93) : na, title = "Entry window")
 posLong  = strategy.position_size > 0
 posShort = strategy.position_size < 0
 avgPx    = strategy.position_avg_price
-tpLine   = posLong ? avgPx + tpTicks * tick : posShort ? avgPx - tpTicks * tick : na
-slLine   = not na(activeStop) ? activeStop : posLong ? avgPx - activeLossTicks * tick : posShort ? avgPx + activeLossTicks * tick : na
+tpLine   = posLong ? avgPx + activeTpT * tick : posShort ? avgPx - activeTpT * tick : na
+slLine   = posLong ? avgPx - activeSlT * tick : posShort ? avgPx + activeSlT * tick : na
 plot(tpLine, "Take profit", color.new(color.lime, 0), 2, plot.style_linebr)
-plot(posLong or posShort ? slLine : na, "Stop loss", color.new(color.red, 0), 2, plot.style_linebr)
+plot(slLine, "Stop loss", color.new(color.red, 0), 2, plot.style_linebr)
 plot(posLong or posShort ? avgPx : na, "Entry", color.new(color.gray, 0), 1, plot.style_linebr)
 
 plotshape(longTrig, "Long trigger", shape.triangleup, location.belowbar, color.new(color.lime, 0), size = size.tiny)
 plotshape(shortTrig, "Short trigger", shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.tiny)
 
-var table dash = table.new(position.top_right, 2, 9, bgcolor = color.new(color.black, 30), border_width = 1)
+var table dash = table.new(position.top_right, 2, 11, bgcolor = color.new(color.black, 30), border_width = 1)
+f_row(int r, string k, string v, color c) =>
+    table.cell(dash, 0, r, k, text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, r, v, text_color = c, text_size = size.small)
+
 if showDash and barstate.islast
-    table.cell(dash, 0, 0, "Symbol", text_color = color.white, text_size = size.small)
-    table.cell(dash, 1, 0, syminfo.ticker + "  x" + str.tostring(qty), text_color = color.white, text_size = size.small)
-    table.cell(dash, 0, 1, "$ / tick", text_color = color.white, text_size = size.small)
-    table.cell(dash, 1, 1, "$" + str.tostring(tickValue, "#.##"), text_color = color.white, text_size = size.small)
-    table.cell(dash, 0, 2, "TP $" + str.tostring(tpDollars), text_color = color.white, text_size = size.small)
-    table.cell(dash, 1, 2, str.tostring(tpTicks) + " ticks / " + str.tostring(tpTicks * tick, format.mintick) + " pts", text_color = color.lime, text_size = size.small)
-    table.cell(dash, 0, 3, "Trades today", text_color = color.white, text_size = size.small)
-    table.cell(dash, 1, 3, str.tostring(tradesToday) + " / " + str.tostring(maxTrades) + (wonToday and stopOnWin ? "  (done ✔)" : ""), text_color = color.white, text_size = size.small)
-    table.cell(dash, 0, 4, "Armed", text_color = color.white, text_size = size.small)
-    table.cell(dash, 1, 4, (longActive ? "LONG " : "") + (shortActive ? "SHORT" : "") + (not longActive and not shortActive ? "waiting for sweep" : ""), text_color = color.yellow, text_size = size.small)
-    table.cell(dash, 0, 5, "Signals (all / in window)", text_color = color.white, text_size = size.small)
-    table.cell(dash, 1, 5, str.tostring(sigAll) + " / " + str.tostring(sigWindow), text_color = color.white, text_size = size.small)
-    table.cell(dash, 0, 6, "Skipped: stop too wide", text_color = color.white, text_size = size.small)
-    table.cell(dash, 1, 6, str.tostring(skipRisk), text_color = color.orange, text_size = size.small)
-    table.cell(dash, 0, 7, "Skipped: busy / day limit", text_color = color.white, text_size = size.small)
-    table.cell(dash, 1, 7, str.tostring(skipBusy), text_color = color.orange, text_size = size.small)
-    table.cell(dash, 0, 8, "Limit never filled", text_color = color.white, text_size = size.small)
-    table.cell(dash, 1, 8, str.tostring(limitMiss), text_color = color.orange, text_size = size.small)
+    f_row(0, "Symbol", syminfo.ticker + "   $" + str.tostring(tickValue, "#.##") + " / tick", color.white)
+    f_row(1, "Sizing", sizing == "Risk-based" ? "risk $" + str.tostring(riskPerTrade) + ", max " + str.tostring(maxQty) + " ct" : str.tostring(fixedQty) + " ct fixed", color.white)
+    f_row(2, "TP / min R:R", "$" + str.tostring(tpDollars) + " / " + str.tostring(minRR, "#.##") + "R", color.lime)
+    f_row(3, "Last plan", lastPlan, color.white)
+    f_row(4, "Today", str.tostring(tradesToday) + "/" + str.tostring(maxTrades) + " trades   $" + str.tostring(dayPnL, "#,###") + (dayLocked or (stopOnWin and wonToday) ? "  (done)" : ""), color.white)
+    f_row(5, "Room to DD floor", blown ? "BLOWN " + str.format_time(blownTime, "yyyy-MM-dd", tz) : "$" + str.tostring(roomToFloor, "#,###"), blown ? color.red : roomToFloor < riskPerTrade * 2 ? color.orange : color.lime)
+    f_row(6, "Armed", (longActive ? "LONG " : "") + (shortActive ? "SHORT" : "") + (not longActive and not shortActive ? "waiting for sweep" : ""), color.yellow)
+    f_row(7, "Signals (all / in window)", str.tostring(sigAll) + " / " + str.tostring(sigWindow), color.white)
+    f_row(8, "Skipped: risk / R:R", str.tostring(skipRisk), color.orange)
+    f_row(9, "Skipped: busy / day done", str.tostring(skipBusy), color.orange)
+    f_row(10, "Limit never filled", str.tostring(limitMiss), color.orange)
