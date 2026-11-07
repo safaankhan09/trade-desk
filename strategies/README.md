@@ -4,7 +4,7 @@
 
 ## What it does (v2, prop-firm edition)
 
-1. **Liquidity:** Asia high/low (20:00–00:00 NY), London high/low (02:00–05:00 NY) and the prior day high/low. Swing pivots are optional and off by default. Levels are drawn as dotted lines (orange for highs, aqua for lows).
+1. **Liquidity:** Asia high/low (20:00–00:00 NY), London high/low (02:00–05:00 NY), NY AM high/low (09:30–11:30, for PM trades), the prior day high/low, and swing pivots (strength 10). Levels are drawn as dotted lines (orange for highs, aqua for lows).
 2. **Sweep:** a candle wicks through one of those levels and closes back inside it. The label says which level was taken, for example "Asia L swept".
    - Lows taken: the bot looks for a **long**.
    - Highs taken: the bot looks for a **short**.
@@ -12,7 +12,7 @@
    - **IFVG model:** price closes through an opposing FVG, flipping it into an inverse FVG.
    - **FVG model:** a fresh FVG forms in the trade direction after the sweep.
    - **Both:** whichever happens first.
-4. **Entry:** only inside the **entry window** (default 9:30–11:00 NY), either as a limit order on the retest (edge or CE / 50%) or as a market order at the trigger candle's close.
+4. **Entry:** only inside the trading windows: London 03:00–05:00, NY AM 09:30–11:30 and NY PM 13:30–15:45 (NY time). Each window can be switched on or off. Entries are either as a limit order on the retest (edge or CE / 50%) or as a market order at the trigger candle's close.
 5. **Size, stop and target:**
    - **Stop (default):** just past the far edge of the FVG/IFVG you entered on, plus a buffer. This is tight enough for minis. "Beyond sweep" puts it past the sweep wick instead, which is wider and usually needs micros.
    - **Risk-based sizing (default):** the bot takes as many contracts as fit inside "Max risk per trade" ($250) for that stop, up to "Max contracts" (2). If even 1 contract doesn't fit, it skips the trade.
@@ -21,8 +21,8 @@
 6. **Prop firm guard:**
    - **Trailing drawdown:** tracks an end-of-day trailing drawdown ($1,000, with the floor locking at start balance + $100). If the backtest would have blown the account, it stops trading and the panel shows the date.
    - **Daily loss stop:** $500 by default.
-   - **Optional daily profit lock.**
-   - **Max trades per day**, and **done for the day after a winner**.
+   - **Daily goal:** stops for the day once you're up $500.
+   - **Max trades per day:** 4.
    - **Flatten** at 15:55 NY.
 
 ### Lucid 25K setup

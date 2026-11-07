@@ -27,8 +27,13 @@ strategy("Sweep + FVG/IFVG Auto Trader v2", shorttitle = "Sweep FVG Bot", overla
 // ───────────────────────── Inputs ─────────────────────────
 grpT = "Time"
 tz          = input.string("America/New_York", "Timezone", group = grpT)
-entrySess   = input.session("0930-1100", "Entry window", group = grpT, tooltip = "New trades only open inside this window.")
-holdSess    = input.session("0930-1555", "Hold window", group = grpT, tooltip = "Any open trade is flattened once price leaves this window.")
+useW1       = input.bool(true, "Trade London", inline = "w1", group = grpT)
+win1        = input.session("0300-0500", "", inline = "w1", group = grpT)
+useW2       = input.bool(true, "Trade NY AM", inline = "w2", group = grpT)
+win2        = input.session("0930-1130", "", inline = "w2", group = grpT)
+useW3       = input.bool(true, "Trade NY PM", inline = "w3", group = grpT)
+win3        = input.session("1330-1545", "", inline = "w3", group = grpT)
+holdSess    = input.session("1800-1555", "Hold window", group = grpT, tooltip = "Any open trade is flattened once price leaves this window (default: flat by 15:55 NY).")
 
 grpL = "Liquidity (what counts as a sweep)"
 useAsia     = input.bool(true, "Asia high/low", inline = "asia", group = grpL)
@@ -36,7 +41,9 @@ asiaSess    = input.session("2000-0000", "", inline = "asia", group = grpL)
 useLondon   = input.bool(true, "London high/low", inline = "lon", group = grpL)
 lonSess     = input.session("0200-0500", "", inline = "lon", group = grpL)
 usePrevDay  = input.bool(true, "Prior day high/low", group = grpL)
-useSwings   = input.bool(false, "Swing pivots", inline = "sw", group = grpL)
+useNyAm     = input.bool(true, "NY AM high/low (for PM trades)", inline = "nyam", group = grpL)
+nyAmSess    = input.session("0930-1130", "", inline = "nyam", group = grpL)
+useSwings   = input.bool(true, "Swing pivots", inline = "sw", group = grpL)
 pivotLen    = input.int(10, "strength", minval = 1, inline = "sw", group = grpL)
 needReclaim = input.bool(true, "Sweep must close back inside the level", group = grpL)
 showLiq     = input.bool(true, "Draw liquidity lines", group = grpL)
@@ -75,9 +82,9 @@ useDDGuard  = input.bool(true, "Track trailing drawdown (stop if blown)", group 
 acctDD      = input.float(1000, "Max drawdown ($, end-of-day trailing)", minval = 0, group = grpP)
 lockAbove   = input.float(100, "Floor locks at start balance + ($)", minval = 0, group = grpP)
 dailyLoss   = input.float(500, "Stop for the day after losing ($, 0 = off)", minval = 0, group = grpP)
-dailyProfit = input.float(0, "Stop for the day after making ($, 0 = off)", minval = 0, group = grpP)
-maxTrades   = input.int(2, "Max trades per day", minval = 1, group = grpP)
-stopOnWin   = input.bool(true, "Done for the day after a winner", group = grpP)
+dailyProfit = input.float(500, "Daily goal: stop after making ($, 0 = off)", minval = 0, group = grpP)
+maxTrades   = input.int(4, "Max trades per day", minval = 1, group = grpP)
+stopOnWin   = input.bool(false, "Done for the day after any winner", group = grpP)
 
 grpA = "Alerts / automation"
 alertStyle  = input.string("Bracket", "Alert style", options = ["Bracket", "Signals"], group = grpA,
@@ -100,7 +107,9 @@ longOK    = tradeDir != "Short only"
 shortOK   = tradeDir != "Long only"
 bracket   = alertStyle == "Bracket"
 
-inEntry = not na(time(timeframe.period, entrySess, tz))
+inEntry = (useW1 and not na(time(timeframe.period, win1, tz))) or
+     (useW2 and not na(time(timeframe.period, win2, tz))) or
+     (useW3 and not na(time(timeframe.period, win3, tz)))
 inHold  = not na(time(timeframe.period, holdSess, tz))
 
 // ───────────────────────── Daily bookkeeping & prop guard ─────────────────────────
@@ -188,6 +197,7 @@ f_sess(string sess) =>
 
 [asiaH, asiaL, asiaEnd] = f_sess(asiaSess)
 [lonH, lonL, lonEnd]    = f_sess(lonSess)
+[amH, amL, amEnd]       = f_sess(nyAmSess)
 [pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
 ph = ta.pivothigh(high, pivotLen, pivotLen)
 pl = ta.pivotlow(low, pivotLen, pivotLen)
@@ -198,6 +208,9 @@ if useAsia and asiaEnd and not na(asiaH)
 if useLondon and lonEnd and not na(lonH)
     f_addLiq(liqHighs, lonH, "London H", true)
     f_addLiq(liqLows, lonL, "London L", false)
+if useNyAm and amEnd and not na(amH)
+    f_addLiq(liqHighs, amH, "NY AM H", true)
+    f_addLiq(liqLows, amL, "NY AM L", false)
 if usePrevDay and not na(pdh) and pdh != nz(pdh[1])
     f_addLiq(liqHighs, pdh, "PDH", true)
 if usePrevDay and not na(pdl) and pdl != nz(pdl[1])
