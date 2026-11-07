@@ -524,7 +524,7 @@ plot(posLong or posShort ? avgPx : na, "Entry", color.new(color.gray, 0), 1, plo
 plotshape(longTrig, "Long trigger", shape.triangleup, location.belowbar, color.new(color.lime, 0), size = size.tiny)
 plotshape(shortTrig, "Short trigger", shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.tiny)
 
-var table dash = table.new(position.top_right, 2, 12, bgcolor = color.new(color.black, 30), border_width = 1)
+var table dash = table.new(position.top_right, 2, 13, bgcolor = color.new(color.black, 30), border_width = 1)
 f_row(int r, string k, string v, color c) =>
     table.cell(dash, 0, r, k, text_color = color.white, text_size = size.small)
     table.cell(dash, 1, r, v, text_color = c, text_size = size.small)
@@ -542,3 +542,6 @@ if showDash and barstate.islast
     f_row(9, "Skipped: busy / day done", str.tostring(skipBusy), color.orange)
     f_row(10, "Limit never filled", str.tostring(limitMiss), color.orange)
     f_row(11, "Last skip", lastSkip, color.orange)
+    string setupTxt = model + " | " + (useW1 ? "LON " : "") + (useW2 ? "AM " : "") + (useW3 ? "PM " : "") + "| swings " + (useSwings ? "on" : "off") + " | max " + str.tostring(maxTrades) + "/day"
+    bool isV3 = model == "FVG" and useW2 and not useW1 and not useW3 and not useSwings and maxQty == 1 and minRR == 2.0 and maxTrades == 3
+    f_row(12, "Setup", setupTxt + (isV3 ? "  (v3 tested)" : "  (NOT v3 defaults)"), isV3 ? color.lime : color.red)
