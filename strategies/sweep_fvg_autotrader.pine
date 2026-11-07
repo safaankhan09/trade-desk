@@ -64,9 +64,10 @@ fixedQty    = input.int(2, "Fixed contracts", minval = 1, group = grpR)
 riskPerTrade = input.float(250, "Max risk per trade ($)", minval = 1, group = grpR)
 tpDollars   = input.float(500, "Take profit ($ total)", minval = 1, group = grpR)
 minRR       = input.float(1.5, "Min reward:risk (0 = off)", minval = 0, step = 0.25, group = grpR)
-slMode      = input.string("Beyond sweep", "Stop loss", options = ["Beyond sweep", "Fixed $"], group = grpR)
+slMode      = input.string("Beyond FVG zone", "Stop loss", options = ["Beyond FVG zone", "Beyond sweep", "Fixed $"], group = grpR,
+     tooltip = "Beyond FVG zone: just past the far edge of the FVG/IFVG you entered on (tight, fits minis).\nBeyond sweep: past the sweep wick (wide, usually needs micros).\nFixed $: a set dollar stop.")
 slDollars   = input.float(250, "Fixed stop ($ total)", minval = 1, group = grpR)
-slBuffer    = input.int(4, "Stop buffer past sweep wick (ticks)", minval = 0, group = grpR)
+slBuffer    = input.int(4, "Stop buffer (ticks)", minval = 0, group = grpR)
 wideStop    = input.string("Skip trade", "If stop is too wide for even 1 contract", options = ["Skip trade", "Cap stop at max risk"], group = grpR)
 
 grpP = "Prop firm guard"
@@ -342,9 +343,10 @@ if fvgs.size() > 40
     fvgs.shift()
 
 // ───────────────────────── Trade plan (size, stop, target) ─────────────────────────
-// Returns [ok, contracts, stopTicks, tpTicks, riskDollars, rr]
+// Returns [ok, contracts, stopTicks, tpTicks, riskDollars, rr, whySkipped]
 f_plan(float entryPx, float structStop, bool isLong) =>
-    bool ok = true
+    bool   ok  = true
+    string why = ""
     int  q  = 0
     int  slT = 0
     if slMode == "Fixed $"
@@ -353,7 +355,8 @@ f_plan(float entryPx, float structStop, bool isLong) =>
     else
         float dist = isLong ? entryPx - structStop : structStop - entryPx
         if dist <= 0
-            ok := false
+            ok  := false
+            why := "stop on wrong side of entry"
         else
             slT := math.round(dist / tick)
             if sizing == "Risk-based"
@@ -363,22 +366,26 @@ f_plan(float entryPx, float structStop, bool isLong) =>
                         q   := 1
                         slT := math.floor(riskPerTrade / tickValue)
                     else
-                        ok := false
+                        ok  := false
+                        why := "stop " + str.tostring(slT * tick, format.mintick) + " pts = $" + str.tostring(slT * tickValue, "#") + "/ct > $" + str.tostring(riskPerTrade, "#") + " max"
             else
                 q := fixedQty
                 if slT * tickValue * q > riskPerTrade
                     if wideStop == "Cap stop at max risk"
                         slT := math.floor(riskPerTrade / (tickValue * q))
                     else
-                        ok := false
+                        ok  := false
+                        why := "stop risk $" + str.tostring(slT * tickValue * q, "#") + " > $" + str.tostring(riskPerTrade, "#") + " max"
     if ok and (q < 1 or slT < 1)
-        ok := false
+        ok  := false
+        why := "size/stop rounds to 0"
     int   tpT   = q > 0 ? math.ceil(tpDollars / (tickValue * q)) : 0
     float riskD = slT * tickValue * q
     float rr    = riskD > 0 ? tpDollars / riskD : 0.0
     if ok and minRR > 0 and rr < minRR
-        ok := false
-    [ok, q, slT, tpT, riskD, rr]
+        ok  := false
+        why := "R:R " + str.tostring(rr, "#.#") + " < " + str.tostring(minRR, "#.##") + " min"
+    [ok, q, slT, tpT, riskD, rr, why]
 
 // ───────────────────────── Alert payloads ─────────────────────────
 f_entryMsg(string action, int q, float px, float tp, float sl) =>
@@ -396,6 +403,7 @@ var int    pendShortBar = na
 var int    activeTpT    = na
 var int    activeSlT    = na
 var string lastPlan     = "-"
+var string lastSkip     = "-"
 
 var int sigAll     = 0
 var int sigWindow  = 0
@@ -426,7 +434,8 @@ f_planText(int q, int slT, int tpT, float rr) =>
 
 if longSig and canTrade
     float entryPx = useLimit ? math.round_to_mintick(entryLevel == "Edge" ? longTop : (longTop + longBot) / 2) : close
-    [ok, q, slT, tpT, riskD, rr] = f_plan(entryPx, longSweepPx - slBuffer * tick, true)
+    float structStop = (slMode == "Beyond sweep" ? longSweepPx : longBot) - slBuffer * tick
+    [ok, q, slT, tpT, riskD, rr, why] = f_plan(entryPx, structStop, true)
     if ok
         float tpPx = entryPx + tpT * tick
         float slPx = entryPx - slT * tick
@@ -442,10 +451,12 @@ if longSig and canTrade
         longSweepBar := na              // sweep used up
     else
         skipRisk += 1
+        lastSkip := why
 
 if shortSig and canTrade and na(pendLongBar)
     float entryPx = useLimit ? math.round_to_mintick(entryLevel == "Edge" ? shortBot : (shortTop + shortBot) / 2) : close
-    [ok, q, slT, tpT, riskD, rr] = f_plan(entryPx, shortSweepPx + slBuffer * tick, false)
+    float structStop = (slMode == "Beyond sweep" ? shortSweepPx : shortTop) + slBuffer * tick
+    [ok, q, slT, tpT, riskD, rr, why] = f_plan(entryPx, structStop, false)
     if ok
         float tpPx = entryPx - tpT * tick
         float slPx = entryPx + slT * tick
@@ -461,6 +472,7 @@ if shortSig and canTrade and na(pendLongBar)
         shortSweepBar := na
     else
         skipRisk += 1
+        lastSkip := why
 
 // Unfilled limits: cancel after N bars, once the entry window closes, or when locked
 if not na(pendLongBar) and newFills == 0 and bar_index > pendLongBar
@@ -495,7 +507,7 @@ plot(posLong or posShort ? avgPx : na, "Entry", color.new(color.gray, 0), 1, plo
 plotshape(longTrig, "Long trigger", shape.triangleup, location.belowbar, color.new(color.lime, 0), size = size.tiny)
 plotshape(shortTrig, "Short trigger", shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.tiny)
 
-var table dash = table.new(position.top_right, 2, 11, bgcolor = color.new(color.black, 30), border_width = 1)
+var table dash = table.new(position.top_right, 2, 12, bgcolor = color.new(color.black, 30), border_width = 1)
 f_row(int r, string k, string v, color c) =>
     table.cell(dash, 0, r, k, text_color = color.white, text_size = size.small)
     table.cell(dash, 1, r, v, text_color = c, text_size = size.small)
@@ -512,3 +524,4 @@ if showDash and barstate.islast
     f_row(8, "Skipped: risk / R:R", str.tostring(skipRisk), color.orange)
     f_row(9, "Skipped: busy / day done", str.tostring(skipBusy), color.orange)
     f_row(10, "Limit never filled", str.tostring(limitMiss), color.orange)
+    f_row(11, "Last skip", lastSkip, color.orange)

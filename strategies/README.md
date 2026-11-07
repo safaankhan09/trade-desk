@@ -14,7 +14,7 @@
    - **Both:** whichever happens first.
 4. **Entry:** only inside the **entry window** (default 9:30–11:00 NY), either as a limit order on the retest (edge or CE / 50%) or as a market order at the trigger candle's close.
 5. **Size, stop and target:**
-   - **Stop:** just past the sweep wick, plus a buffer.
+   - **Stop (default):** just past the far edge of the FVG/IFVG you entered on, plus a buffer. This is tight enough for minis. "Beyond sweep" puts it past the sweep wick instead, which is wider and usually needs micros.
    - **Risk-based sizing (default):** the bot takes as many contracts as fit inside "Max risk per trade" ($250) for that stop, up to "Max contracts" (2). If even 1 contract doesn't fit, it skips the trade.
    - **TP:** a fixed dollar amount ($500), split across however many contracts it took.
    - **Min R:R filter:** skips trades below 1.5R by default.
