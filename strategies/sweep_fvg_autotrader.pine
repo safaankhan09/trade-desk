@@ -12,15 +12,14 @@
 //      (limit order) or at the close of the trigger candle.
 //   5. Take profit is a fixed dollar amount (default $500). Stop goes
 //      just beyond the sweep wick, or a fixed dollar amount.
+// Note: margin_long/short = 0 because futures are margined. With v6's default
+// 100% margin, 1 NQ (~$540k notional) gets rejected on a $50k test account.
 // ------------------------------------------------------------
 strategy("Sweep + FVG/IFVG Auto Trader", shorttitle = "Sweep FVG Bot", overlay = true,
      default_qty_type = strategy.fixed, default_qty_value = 1,
      initial_capital = 50000, currency = currency.USD,
      commission_type = strategy.commission.cash_per_contract, commission_value = 2.5,
-     slippage = 1, max_boxes_count = 300, max_labels_count = 300,
-     // Futures are margined, not paid for in full. Without this, v6 assumes 100% margin
-     // (1 NQ ~ $540k notional) and silently rejects every order on a $50k account.
-     margin_long = 0, margin_short = 0)
+     slippage = 1, max_boxes_count = 300, max_labels_count = 300, margin_long = 0, margin_short = 0)
 
 // ───────────────────────── Inputs ─────────────────────────
 grpT = "Time"
