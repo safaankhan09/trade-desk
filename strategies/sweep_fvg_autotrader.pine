@@ -17,7 +17,10 @@ strategy("Sweep + FVG/IFVG Auto Trader", shorttitle = "Sweep FVG Bot", overlay =
      default_qty_type = strategy.fixed, default_qty_value = 1,
      initial_capital = 50000, currency = currency.USD,
      commission_type = strategy.commission.cash_per_contract, commission_value = 2.5,
-     slippage = 1, max_boxes_count = 300, max_labels_count = 300)
+     slippage = 1, max_boxes_count = 300, max_labels_count = 300,
+     // Futures are margined, not paid for in full. Without this, v6 assumes 100% margin
+     // (1 NQ ~ $540k notional) and silently rejects every order on a $50k account.
+     margin_long = 0, margin_short = 0)
 
 // ───────────────────────── Inputs ─────────────────────────
 grpT = "Time"
