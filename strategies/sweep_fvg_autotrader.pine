@@ -1,5 +1,9 @@
 //@version=6
-// Sweep + FVG / IFVG Auto Trader  v2  (prop-firm edition)
+// Sweep + FVG Auto Trader  v3  (prop-firm edition)
+// v3 defaults come from a Python backtest of this exact logic on 10 weeks of
+// 5m NQ/ES/YM/GC/SI data (strategies/backtest/). Tested best: FVG model, NY AM
+// window only, stop past the FVG zone, min 2R. IFVG entries, London/PM windows
+// and market entries all lost money in that test, so they are off by default.
 // ------------------------------------------------------------
 // Idea:
 //   1. Liquidity = Asia high/low, London high/low, prior-day high/low
@@ -18,20 +22,20 @@
 // Note: margin_long/short = 0 because futures are margined. With v6's default
 // 100% margin, 1 NQ (~$540k notional) gets rejected on a small test account.
 // ------------------------------------------------------------
-strategy("Sweep + FVG/IFVG Auto Trader v2", shorttitle = "Sweep FVG Bot", overlay = true,
+strategy("Sweep + FVG Auto Trader v3", shorttitle = "Sweep FVG Bot", overlay = true,
      default_qty_type = strategy.fixed, default_qty_value = 1,
      initial_capital = 25000, currency = currency.USD,
-     commission_type = strategy.commission.cash_per_contract, commission_value = 1.0,
+     commission_type = strategy.commission.cash_per_contract, commission_value = 2.0,
      slippage = 1, max_boxes_count = 300, max_labels_count = 300, max_lines_count = 300, margin_long = 0, margin_short = 0)
 
 // ───────────────────────── Inputs ─────────────────────────
 grpT = "Time"
 tz          = input.string("America/New_York", "Timezone", group = grpT)
-useW1       = input.bool(true, "Trade London", inline = "w1", group = grpT)
+useW1       = input.bool(false, "Trade London", inline = "w1", group = grpT)
 win1        = input.session("0300-0500", "", inline = "w1", group = grpT)
 useW2       = input.bool(true, "Trade NY AM", inline = "w2", group = grpT)
 win2        = input.session("0930-1130", "", inline = "w2", group = grpT)
-useW3       = input.bool(true, "Trade NY PM", inline = "w3", group = grpT)
+useW3       = input.bool(false, "Trade NY PM", inline = "w3", group = grpT)
 win3        = input.session("1330-1545", "", inline = "w3", group = grpT)
 holdSess    = input.session("1800-1555", "Hold window", group = grpT, tooltip = "Any open trade is flattened once price leaves this window (default: flat by 15:55 NY).")
 
@@ -41,18 +45,18 @@ asiaSess    = input.session("2000-0000", "", inline = "asia", group = grpL)
 useLondon   = input.bool(true, "London high/low", inline = "lon", group = grpL)
 lonSess     = input.session("0200-0500", "", inline = "lon", group = grpL)
 usePrevDay  = input.bool(true, "Prior day high/low", group = grpL)
-useNyAm     = input.bool(true, "NY AM high/low (for PM trades)", inline = "nyam", group = grpL)
+useNyAm     = input.bool(false, "NY AM high/low (for PM trades)", inline = "nyam", group = grpL)
 nyAmSess    = input.session("0930-1130", "", inline = "nyam", group = grpL)
-useSwings   = input.bool(true, "Swing pivots", inline = "sw", group = grpL)
+useSwings   = input.bool(false, "Swing pivots", inline = "sw", group = grpL)
 pivotLen    = input.int(10, "strength", minval = 1, inline = "sw", group = grpL)
 needReclaim = input.bool(true, "Sweep must close back inside the level", group = grpL)
 showLiq     = input.bool(true, "Draw liquidity lines", group = grpL)
 
 grpS = "Setup"
-model       = input.string("IFVG", "Entry model", options = ["IFVG", "FVG", "Both"], group = grpS,
+model       = input.string("FVG", "Entry model", options = ["IFVG", "FVG", "Both"], group = grpS,
      tooltip = "IFVG: after the sweep, price closes through an opposing FVG (inversion).\nFVG: after the sweep, a new FVG in the trade direction forms.")
 tradeDir    = input.string("Both", "Direction", options = ["Both", "Long only", "Short only"], group = grpS)
-sweepExpiry = input.int(20, "Bars allowed from sweep to entry signal", minval = 1, group = grpS)
+sweepExpiry = input.int(40, "Bars allowed from sweep to entry signal", minval = 1, group = grpS)
 fvgNear     = input.int(15, "IFVG: FVG must form within N bars before sweep", minval = 0, group = grpS)
 minFvgTicks = input.int(4, "Min FVG size (ticks)", minval = 1, group = grpS)
 fvgMaxAge   = input.int(150, "Forget FVGs older than (bars)", minval = 10, group = grpS)
@@ -66,11 +70,11 @@ limitExpiry = input.int(10, "Cancel unfilled limit after (bars)", minval = 1, gr
 grpR = "Risk & sizing"
 sizing      = input.string("Risk-based", "Position sizing", options = ["Risk-based", "Fixed contracts"], group = grpR,
      tooltip = "Risk-based: buys as many contracts as fit inside 'Max risk per trade' for that stop (up to Max contracts).\nFixed: always trades 'Fixed contracts'.")
-maxQty      = input.int(2, "Max contracts", minval = 1, group = grpR, tooltip = "Lucid 25K: 2 minis or 20 micros.")
+maxQty      = input.int(1, "Max contracts", minval = 1, group = grpR, tooltip = "Lucid 25K: 2 minis or 20 micros.")
 fixedQty    = input.int(2, "Fixed contracts", minval = 1, group = grpR)
 riskPerTrade = input.float(250, "Max risk per trade ($)", minval = 1, group = grpR)
 tpDollars   = input.float(500, "Take profit ($ total)", minval = 1, group = grpR)
-minRR       = input.float(1.5, "Min reward:risk (0 = off)", minval = 0, step = 0.25, group = grpR)
+minRR       = input.float(2.0, "Min reward:risk (0 = off)", minval = 0, step = 0.25, group = grpR)
 slMode      = input.string("Beyond FVG zone", "Stop loss", options = ["Beyond FVG zone", "Beyond sweep", "Fixed $"], group = grpR,
      tooltip = "Beyond FVG zone: just past the far edge of the FVG/IFVG you entered on (tight, fits minis).\nBeyond sweep: past the sweep wick (wide, usually needs micros).\nFixed $: a set dollar stop.")
 slDollars   = input.float(250, "Fixed stop ($ total)", minval = 1, group = grpR)
@@ -83,7 +87,7 @@ acctDD      = input.float(1000, "Max drawdown ($, end-of-day trailing)", minval 
 lockAbove   = input.float(100, "Floor locks at start balance + ($)", minval = 0, group = grpP)
 dailyLoss   = input.float(500, "Stop for the day after losing ($, 0 = off)", minval = 0, group = grpP)
 dailyProfit = input.float(500, "Daily goal: stop after making ($, 0 = off)", minval = 0, group = grpP)
-maxTrades   = input.int(4, "Max trades per day", minval = 1, group = grpP)
+maxTrades   = input.int(3, "Max trades per day", minval = 1, group = grpP)
 stopOnWin   = input.bool(false, "Done for the day after any winner", group = grpP)
 
 grpA = "Alerts / automation"

@@ -1,4 +1,6 @@
-# Sweep + FVG / IFVG Auto Trader (TradingView)
+# Sweep + FVG Auto Trader (TradingView)
+
+**v3:** the defaults were picked from a real backtest of this logic in Python. See [backtest/RESULTS.md](backtest/RESULTS.md) for the numbers and caveats.
 
 `sweep_fvg_autotrader.pine` is a Pine Script v6 **strategy**. You can backtest it on TradingView and send its alerts to a broker bridge to auto-execute.
 
