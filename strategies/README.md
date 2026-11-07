@@ -43,8 +43,9 @@ If you trade more contracts, the TP distance shrinks: on 2 NQ, $500 is 12.5 pts.
 
 1. In TradingView, open the **Pine Editor**, paste in the file, click **Save**, then **Add to chart**.
 2. Use a futures chart such as `NQ1!` or `ES1!` on a 1m–5m timeframe.
-3. The info panel (top right) shows how many signals fired and why any were skipped (stop too wide, already in a trade or day limit hit, limit order never filled). Use it to tune the settings.
-4. Check the **Strategy Tester** tab for results. Adjust inputs in the settings (gear icon).
+3. **Important:** click the gear on the strategy, open **Properties**, and set **Margin for long positions** and **Margin for short positions** to **0%**. If you leave them at 100%, TradingView needs the full contract value in cash (1 NQ is about $540k), so it rejects every order on big contracts like NQ, ES, GC, SI and BTC.
+4. The info panel (top right) shows how many signals fired and why any were skipped (stop too wide, already in a trade or day limit hit, limit order never filled). Use it to tune the settings.
+5. Check the **Strategy Tester** tab for results. Adjust inputs in the settings (gear icon).
 
 ## Auto-execute (optional)
 

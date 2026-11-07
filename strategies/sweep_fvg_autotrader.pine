@@ -67,7 +67,9 @@ showDash    = input.bool(true, "Show info panel", group = grpV)
 
 // ───────────────────────── Derived ─────────────────────────
 tick      = syminfo.mintick
-tickValue = syminfo.mintick * syminfo.pointvalue          // $ per tick per contract
+// $ per tick per contract, converted to the account currency. Some contracts
+// (sugar, coffee, cotton...) are quoted in cents (USX), so raw pointvalue is 100x too big.
+tickValue = strategy.convert_to_account(syminfo.mintick * syminfo.pointvalue)
 tpTicks   = math.ceil(tpDollars / (tickValue * qty))
 slTicks   = math.ceil(slDollars / (tickValue * qty))
 useLimit  = entryType == "Retest (limit)"
